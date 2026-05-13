@@ -14,7 +14,7 @@ import java.util.List;
 @Repository
 public interface EnvioMaletasRepository extends JpaRepository<EnvioMaletas, Integer> {
 
-    List<EnvioMaletas> findByEstado(EstadoMaleta estado);
+    // List<EnvioMaletas> findByEstado(EstadoMaleta estado);
 
     List<EnvioMaletas> findByAerolineaIdAerolinea(Integer idAerolinea);
 
