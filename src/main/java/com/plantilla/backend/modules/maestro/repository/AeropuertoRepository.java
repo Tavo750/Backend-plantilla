@@ -15,9 +15,13 @@ import java.util.Optional;
 @Repository
 public interface AeropuertoRepository extends JpaRepository<Aeropuerto, Integer> {
 
-    Optional<Aeropuerto> findByCodigoIata(String codigoIata);
+    Optional<Aeropuerto> findByCodigoOaci(String codigoOaci);
 
-    boolean existsByCodigoIata(String codigoIata);
+    boolean existsByCodigoOaci(String codigoOaci);
+
+    Optional<Aeropuerto> findByCodigo(String codigo);
+
+    boolean existsByCodigo(String codigo);
 
     List<Aeropuerto> findByContinente(Continente continente);
 
