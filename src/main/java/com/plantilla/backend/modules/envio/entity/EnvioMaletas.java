@@ -11,11 +11,13 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 
 /**
  * Lote de maletas estandarizadas enviadas por una aerolínea (RAL-01).
  * La ubicación actual se gestiona en UbicacionEnvio, no aquí.
- * Principio SOLID (S): Solo representa la estructura de datos del envío de maletas.
+ * Principio SOLID (S): Solo representa la estructura de datos del envío de
+ * maletas.
  */
 @Entity
 @Table(name = "envio_maletas")
@@ -49,9 +51,9 @@ public class EnvioMaletas {
     @Column(name = "cantidad", nullable = false)
     private Integer cantidad;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "estado", nullable = false, length = 20)
-    private EstadoMaleta estado = EstadoMaleta.REGISTRADA;
+    // @Enumerated(EnumType.STRING)
+    // @Column(name = "estado", nullable = false, length = 20)
+    // private EstadoMaleta estado = EstadoMaleta.REGISTRADA;
 
     @Column(name = "fecha_registro", nullable = false)
     private LocalDateTime fechaRegistro;
@@ -59,6 +61,9 @@ public class EnvioMaletas {
     @Column(name = "fecha_limite_entrega", nullable = false)
     private LocalDateTime fechaLimiteEntrega;
 
-    @Column(name = "prioridad", nullable = false)
-    private Integer prioridad = 1;
+    @Column(name = "hora_registrada", nullable = false)
+    private LocalTime horaRegistrada;
+
+    // @Column(name = "prioridad", nullable = false)
+    // private Integer prioridad = 1;
 }

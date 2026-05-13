@@ -10,7 +10,8 @@ import java.math.BigDecimal;
 
 /**
  * Política SLA de Tasf.B2B. Solo debe haber un registro activo a la vez.
- * Principio SOLID (S): Solo representa la estructura de datos de la política de entrega.
+ * Principio SOLID (S): Solo representa la estructura de datos de la política de
+ * entrega.
  */
 @Entity
 @Table(name = "politica_entrega")
@@ -31,11 +32,13 @@ public class PoliticaEntrega {
     @Column(name = "dias_distinto_continente", nullable = false)
     private Integer diasDistintoContinente = 2;
 
-    @Column(name = "horas_transito_intra", nullable = false, precision = 4, scale = 2)
-    private BigDecimal horasTransitoIntra = new BigDecimal("0.50");
+    // @Column(name = "horas_transito_intra", nullable = false, precision = 4, scale
+    // = 2)
+    // private BigDecimal horasTransitoIntra = new BigDecimal("0.50");
 
-    @Column(name = "horas_transito_inter", nullable = false, precision = 4, scale = 2)
-    private BigDecimal horasTransitoInter = new BigDecimal("1.00");
+    // @Column(name = "horas_transito_inter", nullable = false, precision = 4, scale
+    // = 2)
+    // private BigDecimal horasTransitoInter = new BigDecimal("1.00");
 
     @Column(name = "activa", nullable = false)
     private Boolean activa = true;

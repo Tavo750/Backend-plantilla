@@ -7,7 +7,8 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 /**
- * Aerolínea cliente que solicita el traslado de maletas a Tasf.B2B (modelo B2B exclusivo).
+ * Aerolínea cliente que solicita el traslado de maletas a Tasf.B2B (modelo B2B
+ * exclusivo).
  * Principio SOLID (S): Solo representa la estructura de datos de la aerolínea.
  */
 @Entity
@@ -28,6 +29,9 @@ public class Aerolinea {
 
     @Column(name = "nombre", nullable = false, length = 120)
     private String nombre;
+
+    @Column(name = "contrasena", nullable = false, length = 100)
+    private String contrasenia;
 
     @Column(name = "activa", nullable = false)
     private Boolean activa = true;
