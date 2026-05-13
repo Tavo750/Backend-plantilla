@@ -41,9 +41,9 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_NAME: plantilla_db
+      DB_NAME: baseEquipo7G
       DB_USERNAME: postgres
-      DB_PASSWORD: postgres
+      DB_PASSWORD: equipodp17g
       SERVER_PORT: 3000
       JWT_SECRET: clave-secreta-super-segura-para-jwt-debe-tener-al-menos-256-bits-de-longitud-2024
       JWT_EXPIRATION: 86400000
