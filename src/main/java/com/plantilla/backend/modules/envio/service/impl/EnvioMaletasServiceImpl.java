@@ -33,9 +33,8 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
     @Override
     public EnvioMaletas actualizarEnvio(Integer id, EnvioMaletas envio) {
         EnvioMaletas existente = obtenerEnvioPorId(id);
-        
+
         // Actualizar campos basicos
-        existente.setCodigo(envio.getCodigo());
         existente.setCantidad(envio.getCantidad());
         existente.setFechaRegistro(envio.getFechaRegistro());
         existente.setHoraRegistrada(envio.getHoraRegistrada());
@@ -43,7 +42,7 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
         existente.setAerolinea(envio.getAerolinea());
         existente.setAeropuertoOrigen(envio.getAeropuertoOrigen());
         existente.setAeropuertoDestino(envio.getAeropuertoDestino());
-        
+
         return envioMaletasRepository.save(existente);
     }
 
