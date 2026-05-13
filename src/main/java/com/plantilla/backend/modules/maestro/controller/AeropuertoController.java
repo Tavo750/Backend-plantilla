@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 @RestController
-@RequestMapping("/aeropuertos")
+@RequestMapping("/maestro/aeropuertos")
 @RequiredArgsConstructor
 @Tag(name = "Aeropuertos", description = "Endpoints de gestión de aeropuertos")
 public class AeropuertoController {
