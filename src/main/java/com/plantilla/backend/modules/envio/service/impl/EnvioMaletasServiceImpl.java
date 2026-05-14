@@ -3,6 +3,10 @@ package com.plantilla.backend.modules.envio.service.impl;
 import com.plantilla.backend.modules.envio.entity.EnvioMaletas;
 import com.plantilla.backend.modules.envio.repository.EnvioMaletasRepository;
 import com.plantilla.backend.modules.envio.service.EnvioMaletasService;
+import com.plantilla.backend.modules.envio.dto.EnvioMaletasCreateDTO;
+import com.plantilla.backend.modules.maestro.repository.AerolineaRepository;
+import com.plantilla.backend.modules.maestro.repository.AeropuertoRepository;
+import com.plantilla.backend.modules.maestro.repository.PoliticaEntregaRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -13,6 +17,9 @@ import java.util.List;
 public class EnvioMaletasServiceImpl implements EnvioMaletasService {
 
     private final EnvioMaletasRepository envioMaletasRepository;
+    private final AerolineaRepository aerolineaRepository;
+    private final AeropuertoRepository aeropuertoRepository;
+    private final PoliticaEntregaRepository politicaEntregaRepository;
 
     @Override
     public List<EnvioMaletas> listarEnvios() {
@@ -26,7 +33,22 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
     }
 
     @Override
-    public EnvioMaletas crearEnvio(EnvioMaletas envio) {
+    public EnvioMaletas crearEnvio(EnvioMaletasCreateDTO dto) {
+        EnvioMaletas envio = new EnvioMaletas();
+        envio.setCantidad(dto.getCantidad());
+        envio.setFechaRegistro(dto.getFechaRegistro());
+        envio.setHoraRegistrada(dto.getHoraRegistrada());
+        envio.setFechaLimiteEntrega(dto.getFechaLimiteEntrega());
+        
+        envio.setAerolinea(aerolineaRepository.findById(dto.getIdAerolinea())
+                .orElseThrow(() -> new RuntimeException("Aerolinea no encontrada")));
+        envio.setAeropuertoOrigen(aeropuertoRepository.findById(dto.getIdAeropuertoOrigen())
+                .orElseThrow(() -> new RuntimeException("Aeropuerto origen no encontrado")));
+        envio.setAeropuertoDestino(aeropuertoRepository.findById(dto.getIdAeropuertoDestino())
+                .orElseThrow(() -> new RuntimeException("Aeropuerto destino no encontrado")));
+        envio.setPoliticaEntrega(politicaEntregaRepository.findById(dto.getIdPolitica())
+                .orElseThrow(() -> new RuntimeException("Politica no encontrada")));
+                
         return envioMaletasRepository.save(envio);
     }
 
