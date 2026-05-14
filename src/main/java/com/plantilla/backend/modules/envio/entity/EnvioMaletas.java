@@ -1,5 +1,6 @@
 package com.plantilla.backend.modules.envio.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.plantilla.backend.modules.maestro.entity.Aerolinea;
 import com.plantilla.backend.modules.maestro.entity.Aeropuerto;
 import com.plantilla.backend.modules.maestro.entity.PoliticaEntrega;
@@ -25,6 +26,7 @@ import java.time.LocalTime;
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 public class EnvioMaletas {
 
     @Id
