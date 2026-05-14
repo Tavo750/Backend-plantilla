@@ -26,4 +26,9 @@ public interface AeropuertoRepository extends JpaRepository<Aeropuerto, Integer>
     List<Aeropuerto> findByContinente(Continente continente);
 
     List<Aeropuerto> findByActivoTrue();
+
+    Optional<Aeropuerto> findByCodigoIgnoreCase(String codigo);
+
+    Optional<Aeropuerto> findByCodigoOaciIgnoreCase(String codigoOaci);
 }
+

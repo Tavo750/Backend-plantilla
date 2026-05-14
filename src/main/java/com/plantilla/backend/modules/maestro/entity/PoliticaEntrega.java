@@ -32,13 +32,11 @@ public class PoliticaEntrega {
     @Column(name = "dias_distinto_continente", nullable = false)
     private Integer diasDistintoContinente = 2;
 
-    // @Column(name = "horas_transito_intra", nullable = false, precision = 4, scale
-    // = 2)
-    // private BigDecimal horasTransitoIntra = new BigDecimal("0.50");
+    @Column(name = "horas_transito_intra", nullable = false, precision = 4, scale = 2)
+    private BigDecimal horasTransitoIntra = new BigDecimal("0.50");
 
-    // @Column(name = "horas_transito_inter", nullable = false, precision = 4, scale
-    // = 2)
-    // private BigDecimal horasTransitoInter = new BigDecimal("1.00");
+    @Column(name = "horas_transito_inter", nullable = false, precision = 4, scale = 2)
+    private BigDecimal horasTransitoInter = new BigDecimal("1.00");
 
     @Column(name = "activa", nullable = false)
     private Boolean activa = true;
