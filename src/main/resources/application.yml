@@ -12,6 +12,8 @@ server:
 # Spring Data Source - PostgreSQL
 # =====================================================================
 spring:
+  config:
+    import: optional:file:.env[.properties], optional:file:.env
   datasource:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:plantilla_db}
     username: ${DB_USERNAME:postgres}
