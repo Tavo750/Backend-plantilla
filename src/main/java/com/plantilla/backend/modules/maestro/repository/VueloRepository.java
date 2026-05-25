@@ -5,6 +5,7 @@ import com.plantilla.backend.shared.enums.EstadoVuelo;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -25,5 +26,14 @@ public interface VueloRepository extends JpaRepository<Vuelo, Integer> {
 
     List<Vuelo> findByAeropuertoDestinoIdAeropuerto(Integer idAeropuertoDestino);
 
+    /**
+     * Lista los vuelos cuya hora de salida está dentro del rango [desde, hasta].
+     * Útil para cargar la ventana de vuelos a usar por el algoritmo ALNS.
+     */
+    List<Vuelo> findByHoraSalidaBetween(LocalDateTime desde, LocalDateTime hasta);
 
+    /**
+     * Lista los vuelos cuya hora de salida está dentro del rango [desde, hasta] y un estado dado.
+     */
+    List<Vuelo> findByHoraSalidaBetweenAndEstado(LocalDateTime desde, LocalDateTime hasta, EstadoVuelo estado);
 }
