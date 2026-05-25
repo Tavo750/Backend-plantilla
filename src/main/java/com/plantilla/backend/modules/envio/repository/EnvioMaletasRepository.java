@@ -5,6 +5,7 @@ import com.plantilla.backend.shared.enums.EstadoMaleta;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -21,4 +22,10 @@ public interface EnvioMaletasRepository extends JpaRepository<EnvioMaletas, Inte
     List<EnvioMaletas> findByAeropuertoOrigenIdAeropuerto(Integer idAeropuertoOrigen);
 
     List<EnvioMaletas> findByAeropuertoDestinoIdAeropuerto(Integer idAeropuertoDestino);
+
+    /**
+     * Lista los envíos cuya fecha de registro está en el rango [desde, hasta].
+     * Útil para alimentar al algoritmo ALNS con la demanda del periodo a simular.
+     */
+    List<EnvioMaletas> findByFechaRegistroBetween(LocalDateTime desde, LocalDateTime hasta);
 }

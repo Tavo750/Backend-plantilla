@@ -1,5 +1,6 @@
 package com.plantilla.backend.modules.maestro.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.plantilla.backend.shared.enums.Continente;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -19,6 +20,7 @@ import java.math.BigDecimal;
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 public class Aeropuerto {
 
     @Id

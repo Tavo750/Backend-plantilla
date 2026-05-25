@@ -1,5 +1,6 @@
 package com.plantilla.backend.modules.envio.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.plantilla.backend.modules.maestro.entity.Aerolinea;
 import com.plantilla.backend.modules.maestro.entity.Aeropuerto;
 import com.plantilla.backend.modules.maestro.entity.PoliticaEntrega;
@@ -25,6 +26,7 @@ import java.time.LocalTime;
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 public class EnvioMaletas {
 
     @Id
@@ -51,9 +53,9 @@ public class EnvioMaletas {
     @Column(name = "cantidad", nullable = false)
     private Integer cantidad;
 
-    // @Enumerated(EnumType.STRING)
-    // @Column(name = "estado", nullable = false, length = 20)
-    // private EstadoMaleta estado = EstadoMaleta.REGISTRADA;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "estado", nullable = false, length = 20)
+    private EstadoMaleta estado = EstadoMaleta.REGISTRADA;
 
     @Column(name = "fecha_registro", nullable = false)
     private LocalDateTime fechaRegistro;
@@ -64,6 +66,6 @@ public class EnvioMaletas {
     @Column(name = "hora_registrada", nullable = false)
     private LocalTime horaRegistrada;
 
-    // @Column(name = "prioridad", nullable = false)
-    // private Integer prioridad = 1;
+    @Column(name = "prioridad", nullable = false)
+    private Integer prioridad = 1;
 }

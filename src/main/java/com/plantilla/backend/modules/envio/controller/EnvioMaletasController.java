@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 @RestController
-@RequestMapping("/envios")
+@RequestMapping("/envio/envios-maletas")
 @RequiredArgsConstructor
 @Tag(name = "Envios", description = "Endpoints CRUD para envios de maletas")
 public class EnvioMaletasController {
@@ -33,13 +33,14 @@ public class EnvioMaletasController {
 
     @PostMapping
     @Operation(summary = "Crear envio")
-    public ResponseEntity<ApiResponse<EnvioMaletas>> crearEnvio(@RequestBody EnvioMaletas envio) {
-        return ResponseEntity.ok(ApiResponse.created(envioMaletasService.crearEnvio(envio)));
+    public ResponseEntity<ApiResponse<EnvioMaletas>> crearEnvio(@RequestBody com.plantilla.backend.modules.envio.dto.EnvioMaletasCreateDTO envioDTO) {
+        return ResponseEntity.ok(ApiResponse.created(envioMaletasService.crearEnvio(envioDTO)));
     }
 
     @PutMapping("/{id}")
     @Operation(summary = "Actualizar envio")
-    public ResponseEntity<ApiResponse<EnvioMaletas>> actualizarEnvio(@PathVariable Integer id, @RequestBody EnvioMaletas envio) {
+    public ResponseEntity<ApiResponse<EnvioMaletas>> actualizarEnvio(@PathVariable Integer id,
+            @RequestBody EnvioMaletas envio) {
         return ResponseEntity.ok(ApiResponse.success(envioMaletasService.actualizarEnvio(id, envio)));
     }
 
