@@ -8,10 +8,10 @@ services:
     container_name: tasfb2b-db
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: ${DB_NAME:-baseEquipo7G}
-      MYSQL_USER: ${DB_USERNAME:-appuser}
-      MYSQL_PASSWORD: ${DB_PASSWORD:-changeme_password_segura_2025}
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
     ports:
       - "127.0.0.1:3306:3306"
     volumes:
@@ -37,11 +37,11 @@ services:
       SPRING_PROFILES_ACTIVE: prod
 
       # ── Conexión a DB ──────────────────────────────────────────────
-      DB_HOST: ${DB_HOST:-db}
-      DB_PORT: ${DB_PORT:-3306}
-      DB_NAME: ${DB_NAME:-baseEquipo7G}
-      DB_USERNAME: ${DB_USERNAME:-appuser}
-      DB_PASSWORD: ${DB_PASSWORD:-changeme_password_segura_2025}
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
 
       # ── JWT ────────────────────────────────────────────────────────
       JWT_SECRET: ${JWT_SECRET:-clave-secreta-super-segura-para-jwt-debe-tener-al-menos-256-bits-de-longitud-2024}
