@@ -1,50 +1,57 @@
 # =====================================================================
-# Docker Compose - Entorno de desarrollo local
+# Docker Compose - Tasf.B2B Backend (Solo Backend)
+# Despliegue en VM Ubuntu apuntando al MySQL 8.4 NATIVO del servidor
 # =====================================================================
-version: '3.9'
 
 services:
-  # =================================================================
-  # Base de datos PostgreSQL
-  # =================================================================
-  postgres:
-    image: postgres:16-alpine
-    container_name: plantilla-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: baseEquipo7G
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: equipodp17g
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # =================================================================
-  # Aplicación Spring Boot (opcional, para despliegue completo)
-  # =================================================================
   backend:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: plantilla-backend
+    container_name: tasfb2b-backend
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    env_file:
-      - .env
-    ports:
-      - "3000:3000"
     profiles:
       - full
+    # CRÍTICO: Esto permite al contenedor conectarse al localhost de la máquina virtual
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # ── Perfil Spring ──────────────────────────────────────────────
+      SPRING_PROFILES_ACTIVE: prod
+
+      # ── Conexión a DB (Apunta al MySQL nativo en el host) ──────────
+      DB_HOST: host.docker.internal
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:-baseEquipo7G}
+      DB_USERNAME: ${DB_USERNAME:-tasf_user}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+
+      # ── JWT ────────────────────────────────────────────────────────
+      JWT_SECRET: ${JWT_SECRET:-clave-secreta-super-segura-para-jwt-debe-tener-al-menos-256-bits-de-longitud-2024}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-86400000}
+
+      # ── CORS ───────────────────────────────────────────────────────
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost}
+
+      # ── JVM: Limitar heap a 512 MB (crítico en VM de 2 GB) ─────────
+      JAVA_OPTS: >-
+        -Xms256m -Xmx512m -XX:MetaspaceSize=96m -XX:MaxMetaspaceSize=128m -XX:+UseG1GC -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.awt.headless=true
+
+    ports:
+      # Solo escucha en localhost → Nginx hace el proxy reverso
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - backend_logs:/app/logs
+    networks:
+      - tasfb2b-net
+    mem_limit: 640m
+    mem_reservation: 256m
+
+networks:
+  tasfb2b-net:
+    driver: bridge
 
 volumes:
-  postgres_data:
+  backend_logs:
     driver: local
+    name: tasfb2b-backend-logs
