@@ -1,9 +1,27 @@
 # =====================================================================
-# Docker Compose - Tasf.B2B Backend (Solo Backend)
-# Despliegue en VM Ubuntu apuntando al MySQL 8.4 NATIVO del servidor
+# Docker Compose - Tasf.B2B Backend (Con MySQL 8.4)
 # =====================================================================
 
 services:
+  db:
+    image: mysql:8.4
+    container_name: tasfb2b-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-baseEquipo7G}
+      MYSQL_USER: ${DB_USERNAME:-appuser}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-changeme_password_segura_2025}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - tasfb2b-net
+    mem_limit: 512m
+    mem_reservation: 256m
+
   backend:
     build:
       context: .
@@ -12,19 +30,18 @@ services:
     restart: unless-stopped
     profiles:
       - full
-    # CRÍTICO: Esto permite al contenedor conectarse al localhost de la máquina virtual
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      - db
     environment:
       # ── Perfil Spring ──────────────────────────────────────────────
       SPRING_PROFILES_ACTIVE: prod
 
-      # ── Conexión a DB (Apunta al MySQL nativo en el host) ──────────
-      DB_HOST: host.docker.internal
-      DB_PORT: 3306
+      # ── Conexión a DB ──────────────────────────────────────────────
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-3306}
       DB_NAME: ${DB_NAME:-baseEquipo7G}
-      DB_USERNAME: ${DB_USERNAME:-tasf_user}
-      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+      DB_USERNAME: ${DB_USERNAME:-appuser}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme_password_segura_2025}
 
       # ── JWT ────────────────────────────────────────────────────────
       JWT_SECRET: ${JWT_SECRET:-clave-secreta-super-segura-para-jwt-debe-tener-al-menos-256-bits-de-longitud-2024}
@@ -55,3 +72,6 @@ volumes:
   backend_logs:
     driver: local
     name: tasfb2b-backend-logs
+  mysql_data:
+    driver: local
+    name: tasfb2b-mysql-data
