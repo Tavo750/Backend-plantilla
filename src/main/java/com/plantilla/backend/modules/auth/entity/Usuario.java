@@ -1,5 +1,6 @@
 package com.plantilla.backend.modules.auth.entity;
 
+import com.plantilla.backend.modules.maestro.entity.Aerolinea;
 import com.plantilla.backend.shared.entity.BaseEntity;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -42,4 +43,8 @@ public class Usuario extends BaseEntity {
 
     @Column(name = "estado", nullable = false)
     private Boolean estado = true;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "id_aerolinea")
+    private Aerolinea aerolinea;
 }

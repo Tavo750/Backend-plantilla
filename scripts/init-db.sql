@@ -341,6 +341,7 @@ CREATE TABLE `usuarios` (
   `actualizado_en` DATETIME(6),
   `creado_en` DATETIME(6),
   `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `id_aerolinea` INT,
   `apellido_materno` VARCHAR(100),
   `apellido_paterno` VARCHAR(100) NOT NULL,
   `nombre` VARCHAR(100) NOT NULL,
@@ -408,3 +409,4 @@ ALTER TABLE `snapshot_vuelo_dia` ADD CONSTRAINT `fksdfhkfowng8dtof2y9ejg1nkf` FO
 ALTER TABLE `asignacion_vuelo` ADD CONSTRAINT `fksmmo5fqv78ob7v8ymcp5kaifa` FOREIGN KEY (`id_plan_ruta`) REFERENCES `plan_ruta` (`id_plan_ruta`);
 ALTER TABLE `resultado_simulacion` ADD CONSTRAINT `fkta93ro0ff5crpt11xxfjot61j` FOREIGN KEY (`id_configuracion`) REFERENCES `configuracion_simulacion` (`id_configuracion`);
 ALTER TABLE `envio_maletas` ADD CONSTRAINT `fkth9bq270f519wf9lwo5khm7cf` FOREIGN KEY (`id_aeropuerto_origen`) REFERENCES `aeropuerto` (`id_aeropuerto`);
+ALTER TABLE `usuarios` ADD CONSTRAINT `fk_usuarios_aerolinea` FOREIGN KEY (`id_aerolinea`) REFERENCES `aerolinea` (`id_aerolinea`);

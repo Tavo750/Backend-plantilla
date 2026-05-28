@@ -6,6 +6,8 @@ import com.plantilla.backend.modules.auth.dto.LoginResponse;
 import com.plantilla.backend.modules.auth.dto.RegisterRequest;
 import com.plantilla.backend.modules.auth.entity.Usuario;
 import com.plantilla.backend.modules.auth.repository.UsuarioRepository;
+import com.plantilla.backend.modules.maestro.entity.Aerolinea;
+import com.plantilla.backend.modules.maestro.repository.AerolineaRepository;
 import com.plantilla.backend.shared.errors.BusinessException;
 import com.plantilla.backend.shared.helpers.StringHelper;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +31,7 @@ public class AuthServiceImpl implements AuthService {
 
     private final AuthenticationManager authenticationManager;
     private final UsuarioRepository usuarioRepository;
+    private final AerolineaRepository aerolineaRepository;
     private final JwtTokenProvider jwtTokenProvider;
     private final PasswordEncoder passwordEncoder;
 
@@ -63,7 +66,15 @@ public class AuthServiceImpl implements AuthService {
         usuario.setCorreo(request.getCorreo());
         usuario.setContrasena(passwordEncoder.encode(request.getContrasena()));
         usuario.setPuesto(request.getPuesto());
+        usuario.setFotoUrl(request.getFotoUrl());
         usuario.setEstado(true);
+
+        if (request.getIdAerolinea() != null) {
+            Aerolinea aerolinea = aerolineaRepository.findById(request.getIdAerolinea())
+                    .orElseThrow(() -> new BusinessException("AEROLINEA_NO_ENCONTRADA",
+                            "No existe la aerolínea con id: " + request.getIdAerolinea()));
+            usuario.setAerolinea(aerolinea);
+        }
 
         Usuario saved = usuarioRepository.save(usuario);
         String token = jwtTokenProvider.generateToken(saved.getCorreo());
