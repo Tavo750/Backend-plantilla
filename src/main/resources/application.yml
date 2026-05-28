@@ -19,6 +19,14 @@ spring:
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:postgres}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      keepalive-time: 30000          # Pings conexiones ociosas cada 30 s; evita que AWS RDS cierre TCP idle
+      connection-timeout: 30000      # Tiempo máximo esperando conexión del pool (30 s)
+      maximum-pool-size: 10          # Conexiones máximas simultáneas
+      minimum-idle: 2                # Mínimo de conexiones siempre activas en el pool
+      idle-timeout: 300000           # Retira conexiones ociosas tras 5 min (< timeout de AWS RDS)
+      max-lifetime: 580000           # Vida máxima de cada conexión: 9 min 40 s (se renueva antes de que el server la cierre)
+      validation-timeout: 5000       # Tiempo para validar una conexión antes de entregarla (5 s)
 
   # JPA / Hibernate
   jpa:
@@ -29,10 +37,20 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
         format_sql: true
+        jdbc:
+          batch_size: 25             # Agrupa hasta 25 INSERTs/UPDATEs en un solo round-trip a la BD
+          batch_versioned_data: true
+        order_inserts: true          # Reordena inserts para maximizar el batching
+        order_updates: true          # Reordena updates para maximizar el batching
 
   # Cache
   cache:
     type: simple
+
+  # MVC / Async — sin límite de tiempo para peticiones SSE de larga duración (simulaciones multi-día)
+  mvc:
+    async:
+      request-timeout: -1
 
 # =====================================================================
 # JWT
