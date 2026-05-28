@@ -31,4 +31,7 @@ public class LoginResponse {
     private String puesto;
     private String fotoUrl;
     private Boolean estado;
+
+    // Aerolínea asociada al usuario
+    private Integer idAerolinea;
 }

@@ -99,6 +99,7 @@ public class AuthServiceImpl implements AuthService {
                 .puesto(usuario.getPuesto())
                 .fotoUrl(usuario.getFotoUrl())
                 .estado(usuario.getEstado())
+                .idAerolinea(usuario.getAerolinea() != null ? usuario.getAerolinea().getIdAerolinea() : null)
                 .build();
     }
 }
