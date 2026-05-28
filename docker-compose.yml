@@ -55,8 +55,8 @@ services:
         -Xms256m -Xmx512m -XX:MetaspaceSize=96m -XX:MaxMetaspaceSize=128m -XX:+UseG1GC -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.awt.headless=true
 
     ports:
-      # Solo escucha en localhost → Nginx hace el proxy reverso
-      - "127.0.0.1:8080:8080"
+      # Accesible desde cualquier interfaz de red (útil para Postman / desarrollo)
+      - "0.0.0.0:8080:8080"
     volumes:
       - backend_logs:/app/logs
     networks:

@@ -21,7 +21,7 @@ import java.util.List;
  * Principio SOLID (D): Depende de la abstracción UsuarioService.
  */
 @RestController
-@RequestMapping("/usuarios")
+@RequestMapping("/auth/usuarios")
 @RequiredArgsConstructor
 @Tag(name = "Usuarios", description = "Endpoints CRUD para la gestión de usuarios")
 public class UsuarioController {
