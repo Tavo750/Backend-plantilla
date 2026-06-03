@@ -5,12 +5,13 @@ import com.plantilla.backend.modules.maestro.repository.AeropuertoRepository;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.io.Resource;
-import org.springframework.core.io.ResourceLoader;
+import org.springframework.core.io.support.ResourcePatternResolver;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.sql.Statement;
@@ -25,7 +26,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ImportacionEnviosService {
 
-    private final ResourceLoader resourceLoader;
+    private final ResourcePatternResolver resourceLoader;
     private final AeropuertoRepository aeropuertoRepository;
     private final JdbcTemplate jdbcTemplate;
 
@@ -206,5 +207,111 @@ public class ImportacionEnviosService {
     private LocalDateTime convertirHoraLocalAUtc(LocalDate fecha, LocalTime horaLocal, Integer gmt) {
         LocalDateTime fechaHoraLocal = LocalDateTime.of(fecha, horaLocal);
         return fechaHoraLocal.minusHours(gmt);
+    }
+
+    // ── Importación multi-aeropuerto ─────────────────────────────────────────
+
+    /**
+     * Importa los envíos de TODOS los archivos en classpath:data/_envios_preliminar_/
+     * para el rango indicado. Antes de insertar, limpia en cascada los registros
+     * existentes del rango para garantizar idempotencia.
+     */
+    @Transactional
+    public Map<String, Object> importarTodosLosEnvios(LocalDate fechaInicio, int dias) {
+        if (dias <= 0) {
+            throw new IllegalArgumentException("La cantidad de días debe ser mayor a 0.");
+        }
+
+        // Rango UTC con margen de 1 día a cada lado para cubrir desfases de zona horaria
+        LocalDateTime desdeUtc = fechaInicio.minusDays(1).atStartOfDay();
+        LocalDateTime hastaUtc = fechaInicio.plusDays(dias + 1).atStartOfDay();
+
+        limpiarEnviosEnRango(desdeUtc, hastaUtc);
+
+        Resource[] archivos;
+        try {
+            archivos = resourceLoader.getResources(
+                    "classpath:data/_envios_preliminar_/_envios_*.txt");
+        } catch (IOException e) {
+            throw new RuntimeException("Error al escanear archivos de envíos: " + e.getMessage(), e);
+        }
+
+        if (archivos.length == 0) {
+            throw new IllegalStateException(
+                    "No se encontraron archivos en classpath:data/_envios_preliminar_/");
+        }
+
+        int totalInsertados   = 0;
+        int totalLeidas       = 0;
+        int totalOmitidas     = 0;
+        int totalFueraDeRango = 0;
+        List<String> procesados = new ArrayList<>();
+        List<String> omitidos   = new ArrayList<>();
+
+        for (Resource archivo : archivos) {
+            String nombre = archivo.getFilename();
+            if (nombre == null) continue;
+            String oaci = extraerOaci(nombre);
+            if (oaci == null) continue;
+
+            try {
+                Map<String, Object> res = importarEnvios(
+                        "_envios_preliminar_/" + nombre, oaci, fechaInicio, dias);
+                totalInsertados   += (int) res.get("enviosInsertados");
+                totalLeidas       += (int) res.get("lineasLeidas");
+                totalOmitidas     += (int) res.get("lineasOmitidas");
+                totalFueraDeRango += (int) res.get("fueraDeRango");
+                procesados.add(oaci);
+            } catch (IllegalStateException e) {
+                // Aeropuerto no registrado en BD o archivo no encontrado: se omite
+                omitidos.add(oaci + ": " + e.getMessage());
+            }
+        }
+
+        Map<String, Object> resultado = new LinkedHashMap<>();
+        resultado.put("fechaInicio", fechaInicio.toString());
+        resultado.put("dias", dias);
+        resultado.put("aeropuertosProcesados", procesados.size());
+        resultado.put("aeropuertos", procesados);
+        resultado.put("aeropuertosOmitidos", omitidos);
+        resultado.put("totalLineasLeidas", totalLeidas);
+        resultado.put("totalEnviosInsertados", totalInsertados);
+        resultado.put("totalFueraDeRango", totalFueraDeRango);
+        resultado.put("totalLineasOmitidas", totalOmitidas);
+        return resultado;
+    }
+
+    private void limpiarEnviosEnRango(LocalDateTime desde, LocalDateTime hasta) {
+        String ids = "SELECT id_envio FROM envio_maletas WHERE fecha_registro >= ? AND fecha_registro < ?";
+
+        jdbcTemplate.update(
+                "DELETE FROM envio_replanificacion WHERE id_envio IN (" + ids + ")",
+                desde, hasta);
+        jdbcTemplate.update(
+                "DELETE FROM asignacion_vuelo WHERE id_envio IN (" + ids + ")",
+                desde, hasta);
+        jdbcTemplate.update(
+                "DELETE FROM tramo_ruta WHERE id_plan_ruta IN " +
+                "(SELECT id_plan_ruta FROM plan_ruta WHERE id_envio IN (" + ids + "))",
+                desde, hasta);
+        jdbcTemplate.update(
+                "DELETE FROM plan_ruta WHERE id_envio IN (" + ids + ")",
+                desde, hasta);
+        jdbcTemplate.update(
+                "DELETE FROM ubicacion_envio WHERE id_envio IN (" + ids + ")",
+                desde, hasta);
+        jdbcTemplate.update(
+                "DELETE FROM envio_maletas WHERE fecha_registro >= ? AND fecha_registro < ?",
+                desde, hasta);
+    }
+
+    private String extraerOaci(String nombre) {
+        // "_envios_SBBR_.txt" → "SBBR"
+        int ini = nombre.indexOf("_envios_");
+        if (ini < 0) return null;
+        ini += 8;
+        int fin = nombre.lastIndexOf("_");
+        if (fin <= ini) return null;
+        return nombre.substring(ini, fin).toUpperCase();
     }
 }

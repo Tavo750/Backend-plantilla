@@ -29,10 +29,20 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.MySQLDialect
         format_sql: true
+        jdbc:
+          batch_size: 25             # Agrupa hasta 25 INSERTs/UPDATEs en un solo round-trip a la BD
+          batch_versioned_data: true
+        order_inserts: true          # Reordena inserts para maximizar el batching
+        order_updates: true          # Reordena updates para maximizar el batching
 
   # Cache
   cache:
     type: simple
+
+  # MVC / Async — sin límite de tiempo para peticiones SSE de larga duración (simulaciones multi-día)
+  mvc:
+    async:
+      request-timeout: -1
 
 # =====================================================================
 # JWT

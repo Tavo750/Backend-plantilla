@@ -29,6 +29,7 @@ import com.plantilla.backend.modules.simulacion.repository.ResultadoSimulacionRe
 import com.plantilla.backend.shared.enums.NivelSemaforo;
 import com.plantilla.backend.shared.enums.TipoAlgoritmo;
 import com.plantilla.backend.shared.enums.TipoEscenario;
+import com.plantilla.backend.BackendApplication;
 import com.plantilla.backend.shared.errors.BusinessException;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
@@ -139,6 +140,10 @@ public class AlnsSimulacionService {
         log.info("Simulación ALNS iniciada | fecha={} | días={} | aeropuertos={} | vuelos={} | envíos={}",
                 fechaInicio, dias, aeropuertos.size(), vuelos.size(), envios.size());
 
+        if (!BackendApplication.GUARDAR_EN_BD) {
+            log.warn("[GUARDAR_EN_BD=false] Los resultados de esta simulación NO se guardarán en la BD");
+        }
+
         // ── 4. Persistir configuración (auditoría) ──
         ConfiguracionSimulacion configuracion = guardarConfiguracion(fechaInicio, dias);
 
@@ -184,9 +189,10 @@ public class AlnsSimulacionService {
                     enviosAProcesar, flightIndexCompleto, aeropuertos);
             double costoInicial = CostCalculator.calcularCosto(planInicial);
 
-            // ALNS
+            // ALNS — solo si hay envíos sin asignar que mejorar
             PlanDeRutas mejorPlan;
-            if (planInicial.getTotalMaletasAsignadas() > 0) {
+            boolean hayNoAsignados = !planInicial.getMaletasNoAsignadas().isEmpty();
+            if (planInicial.getTotalMaletasAsignadas() > 0 && hayNoAsignados) {
                 ALNSEngine engine = new ALNSEngine(
                         MAX_ITERACIONES,
                         PORCENTAJE_REMOCION_MIN,
@@ -199,6 +205,7 @@ public class AlnsSimulacionService {
                 );
                 mejorPlan = engine.ejecutar(planInicial);
             } else {
+                // Solución inicial ya asignó todo (o no hay nada asignable) → no hay ganancia en correr ALNS
                 mejorPlan = planInicial;
             }
 
@@ -277,6 +284,11 @@ public class AlnsSimulacionService {
         cfg.setDiasPeriodo(dias);
         cfg.setDescripcion(String.format("Simulación ALNS de %d días desde %s", dias, fechaInicio));
 
+        if (!BackendApplication.GUARDAR_EN_BD) {
+            log.info("[GUARDAR_EN_BD=false] ConfiguracionSimulacion NO persistida en la BD");
+            return cfg;
+        }
+
         PoliticaEntrega politica = politicaEntregaRepository.findByActivaTrue()
                 .or(() -> politicaEntregaRepository.findAll().stream().findFirst())
                 .orElseThrow(() -> new BusinessException(
@@ -327,7 +339,9 @@ public class AlnsSimulacionService {
             planRuta.setCumpleSla(slaCumplido);
             planRuta.setEsVigente(true);
             planRuta.setTiempoComputoMs(tiempoComputoMs);
-            planRuta = planRutaRepository.save(planRuta);
+            if (BackendApplication.GUARDAR_EN_BD) {
+                planRuta = planRutaRepository.save(planRuta);
+            }
 
             // TramoRuta + AsignacionVuelo por cada vuelo de la ruta
             List<Map<String, Object>> tramosEvento = new ArrayList<>();
@@ -350,7 +364,9 @@ public class AlnsSimulacionService {
                 tramo.setLlegadaProgramada(vuelo.getHoraLlegada());
                 tramo.setCantidadAsignada(maleta.getCantidad());
                 tramo.setHolguraHoras(calcularHolguraHoras(maleta, ruta));
-                tramoRutaRepository.save(tramo);
+                if (BackendApplication.GUARDAR_EN_BD) {
+                    tramoRutaRepository.save(tramo);
+                }
 
                 if (parametroSemaforo != null) {
                     AsignacionVuelo asig = new AsignacionVuelo();
@@ -361,7 +377,9 @@ public class AlnsSimulacionService {
                     asig.setCantidadAsignada(maleta.getCantidad());
                     asig.setNivelSemaforo(NivelSemaforo.VERDE);
                     asig.setEstadoAsignacion("ACTIVA");
-                    asignacionVueloRepository.save(asig);
+                    if (BackendApplication.GUARDAR_EN_BD) {
+                        asignacionVueloRepository.save(asig);
+                    }
                 }
 
                 Map<String, Object> tramoEvento = new LinkedHashMap<>();
@@ -427,6 +445,10 @@ public class AlnsSimulacionService {
         resultado.setTiempoEjecucionMin((int) Math.max(0, tiempoTotalMs / 60_000));
         resultado.setFechaGeneracion(LocalDateTime.now());
 
+        if (!BackendApplication.GUARDAR_EN_BD) {
+            log.info("[GUARDAR_EN_BD=false] ResultadoSimulacion NO persistido en la BD");
+            return resultado;
+        }
         return resultadoSimulacionRepository.save(resultado);
     }
 

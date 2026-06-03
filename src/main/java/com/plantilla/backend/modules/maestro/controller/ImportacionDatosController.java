@@ -66,4 +66,27 @@ public class ImportacionDatosController {
                 ApiResponse.success("Envíos importados correctamente", resultado)
         );
     }
+
+    @PostMapping("/envios/todos")
+    @Operation(
+            summary = "Importar envíos de todos los aeropuertos",
+            description = "Lee todos los archivos de _envios_preliminar_/, limpia los registros " +
+                    "existentes del rango y los re-importa. Llamar antes de ejecutar la simulación."
+    )
+    public ResponseEntity<ApiResponse<Map<String, Object>>> importarTodosLosEnvios(
+            @RequestParam(defaultValue = "2026-01-02")
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
+            LocalDate fechaInicio,
+
+            @RequestParam(defaultValue = "5")
+            Integer dias
+    ) {
+        Map<String, Object> resultado = importacionEnviosService.importarTodosLosEnvios(
+                fechaInicio, dias);
+
+        return ResponseEntity.ok(
+                ApiResponse.success(
+                        "Envíos de todos los aeropuertos importados correctamente", resultado)
+        );
+    }
 }

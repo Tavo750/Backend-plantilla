@@ -10,6 +10,8 @@ import com.plantilla.backend.modules.maestro.repository.PoliticaEntregaRepositor
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.List;
 
 @Service
@@ -36,19 +38,52 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
     public EnvioMaletas crearEnvio(EnvioMaletasCreateDTO dto) {
         EnvioMaletas envio = new EnvioMaletas();
         envio.setCantidad(dto.getCantidad());
-        envio.setFechaRegistro(dto.getFechaRegistro());
-        envio.setHoraRegistrada(dto.getHoraRegistrada());
-        envio.setFechaLimiteEntrega(dto.getFechaLimiteEntrega());
-        
-        envio.setAerolinea(aerolineaRepository.findById(dto.getIdAerolinea())
-                .orElseThrow(() -> new RuntimeException("Aerolinea no encontrada")));
+
+        // Aerolínea: usar la indicada o tomar la primera disponible automáticamente
+        if (dto.getIdAerolinea() != null) {
+            envio.setAerolinea(aerolineaRepository.findById(dto.getIdAerolinea())
+                    .orElseThrow(() -> new RuntimeException("Aerolinea no encontrada")));
+        } else {
+            envio.setAerolinea(aerolineaRepository.findAll().stream()
+                    .findFirst()
+                    .orElseThrow(() -> new RuntimeException("No existe ninguna aerolínea registrada")));
+        }
+
         envio.setAeropuertoOrigen(aeropuertoRepository.findById(dto.getIdAeropuertoOrigen())
                 .orElseThrow(() -> new RuntimeException("Aeropuerto origen no encontrado")));
         envio.setAeropuertoDestino(aeropuertoRepository.findById(dto.getIdAeropuertoDestino())
                 .orElseThrow(() -> new RuntimeException("Aeropuerto destino no encontrado")));
-        envio.setPoliticaEntrega(politicaEntregaRepository.findById(dto.getIdPolitica())
-                .orElseThrow(() -> new RuntimeException("Politica no encontrada")));
-                
+
+        // Política: usar la indicada o tomar la primera activa automáticamente
+        if (dto.getIdPolitica() != null) {
+            envio.setPoliticaEntrega(politicaEntregaRepository.findById(dto.getIdPolitica())
+                    .orElseThrow(() -> new RuntimeException("Politica no encontrada")));
+        } else {
+            envio.setPoliticaEntrega(politicaEntregaRepository.findByActivaTrue()
+                    .orElseGet(() -> politicaEntregaRepository.findAll().stream()
+                            .findFirst()
+                            .orElseThrow(() -> new RuntimeException("No existe ninguna política de entrega"))));
+        }
+
+        // Fecha registro: usar la indicada o la hora actual UTC
+        LocalDateTime fechaRegistro = dto.getFechaRegistro() != null
+                ? dto.getFechaRegistro()
+                : LocalDateTime.now();
+        envio.setFechaRegistro(fechaRegistro);
+        envio.setHoraRegistrada(dto.getHoraRegistrada() != null
+                ? dto.getHoraRegistrada()
+                : fechaRegistro.toLocalTime());
+
+        // Fecha límite: usar la indicada o calcular por SLA (1 día mismo continente, 2 diferente)
+        if (dto.getFechaLimiteEntrega() != null) {
+            envio.setFechaLimiteEntrega(dto.getFechaLimiteEntrega());
+        } else {
+            String contOrigen  = String.valueOf(envio.getAeropuertoOrigen().getContinente());
+            String contDestino = String.valueOf(envio.getAeropuertoDestino().getContinente());
+            int diasSla = contOrigen.equals(contDestino) ? 1 : 2;
+            envio.setFechaLimiteEntrega(fechaRegistro.plusDays(diasSla));
+        }
+
         return envioMaletasRepository.save(envio);
     }
 

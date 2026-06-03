@@ -10,6 +10,7 @@ import com.plantilla.backend.modules.envio.repository.EnvioMaletasRepository;
 import com.plantilla.backend.modules.maestro.repository.AeropuertoRepository;
 import com.plantilla.backend.modules.maestro.repository.VueloRepository;
 import com.plantilla.backend.shared.enums.Continente;
+import com.plantilla.backend.shared.enums.EstadoVuelo;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,8 +65,12 @@ public class BackendDataAdapter {
      * vía {@code ImportacionVuelosService}).
      */
     public List<Vuelo> cargarVuelos(LocalDateTime desdeUtc, LocalDateTime hastaUtc) {
-        List<com.plantilla.backend.modules.maestro.entity.Vuelo> vuelos =
+        // Excluye vuelos CANCELADOS — el ALNS buscará rutas alternativas automáticamente
+        List<com.plantilla.backend.modules.maestro.entity.Vuelo> todos =
                 vueloRepository.findByHoraSalidaBetween(desdeUtc, hastaUtc);
+        List<com.plantilla.backend.modules.maestro.entity.Vuelo> vuelos = todos.stream()
+                .filter(v -> v.getEstado() != EstadoVuelo.CANCELADO)
+                .collect(java.util.stream.Collectors.toList());
 
         List<Vuelo> resultado = new java.util.ArrayList<>(vuelos.size());
         for (com.plantilla.backend.modules.maestro.entity.Vuelo v : vuelos) {

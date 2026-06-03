@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.util.List;
+import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
 
 /**
  * Manejador global de excepciones.
@@ -70,14 +71,27 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Maneja timeout de peticiones asíncronas (SSE / streaming de larga duración).
+     * No se registra como ERROR: es comportamiento normal cuando el cliente cierra
+     * la conexión o el contenedor expira la petición async antes de que finalice la simulación.
+     */
+    @ExceptionHandler(AsyncRequestTimeoutException.class)
+    public ResponseEntity<Void> handleAsyncTimeout(AsyncRequestTimeoutException ex) {
+        log.debug("Petición async/SSE expirada (AsyncRequestTimeoutException) — descartado silenciosamente");
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
      * Maneja cualquier excepción no controlada (500).
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Object>> handleGenericException(Exception ex) {
         log.error("Error interno del servidor: ", ex);
-
+        // ex.getMessage() puede ser null (p.ej. NullPointerException sin mensaje, AsyncRequestTimeoutException)
+        // List.of(null) lanza NullPointerException en Java — usar valor de respaldo
+        String detalle = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
         return ResponseEntity.internalServerError().body(
                 ApiResponse.error(HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                        "Error interno del servidor", List.of(ex.getMessage())));
+                        "Error interno del servidor", List.of(detalle)));
     }
 }
