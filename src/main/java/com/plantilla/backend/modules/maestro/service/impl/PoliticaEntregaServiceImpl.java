@@ -21,13 +21,13 @@ public class PoliticaEntregaServiceImpl implements PoliticaEntregaService {
 
     @Override
     public PoliticaEntrega obtenerPoliticaPorId(Integer id) {
-        return politicaEntregaRepository.findById(id)
+        return politicaEntregaRepository.findById((Integer) id)
                 .orElseThrow(() -> new RuntimeException("Politica de entrega no encontrada con id: " + id));
     }
 
     @Override
     public PoliticaEntrega crearPolitica(PoliticaEntrega politicaEntrega) {
-        return politicaEntregaRepository.save(politicaEntrega);
+        return politicaEntregaRepository.save((PoliticaEntrega) politicaEntrega);
     }
 
     @Override
@@ -41,6 +41,6 @@ public class PoliticaEntregaServiceImpl implements PoliticaEntregaService {
 
     @Override
     public void eliminarPolitica(Integer id) {
-        politicaEntregaRepository.deleteById(id);
+        politicaEntregaRepository.deleteById((Integer) id);
     }
 }

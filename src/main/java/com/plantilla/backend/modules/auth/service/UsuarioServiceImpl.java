@@ -44,7 +44,7 @@ public class UsuarioServiceImpl implements UsuarioService {
     @Transactional(readOnly = true)
     public UsuarioResponseDto obtenerUsuarioPorId(Long id) {
         log.info("Buscando usuario con id: {}", id);
-        Usuario usuario = usuarioRepository.findById(id)
+        Usuario usuario = usuarioRepository.findById((Long) id)
                 .orElseThrow(() -> new BusinessException("USUARIO_NO_ENCONTRADO",
                         "No se encontró el usuario con id: " + id));
         return toResponseDto(usuario);
@@ -73,7 +73,7 @@ public class UsuarioServiceImpl implements UsuarioService {
     public UsuarioResponseDto actualizarUsuario(Long id, UsuarioRequestDto request) {
         log.info("Actualizando usuario con id: {}", id);
 
-        Usuario usuario = usuarioRepository.findById(id)
+        Usuario usuario = usuarioRepository.findById((Long) id)
                 .orElseThrow(() -> new BusinessException("USUARIO_NO_ENCONTRADO",
                         "No se encontró el usuario con id: " + id));
 
@@ -92,11 +92,11 @@ public class UsuarioServiceImpl implements UsuarioService {
     @Transactional
     public void eliminarUsuario(Long id) {
         log.info("Eliminando usuario con id: {}", id);
-        if (!usuarioRepository.existsById(id)) {
+        if (!usuarioRepository.existsById((Long) id)) {
             throw new BusinessException("USUARIO_NO_ENCONTRADO",
                     "No se encontró el usuario con id: " + id);
         }
-        usuarioRepository.deleteById(id);
+        usuarioRepository.deleteById((Long) id);
     }
 
     // =====================================================================
@@ -125,7 +125,7 @@ public class UsuarioServiceImpl implements UsuarioService {
 
         // Aerolínea: asociar si viene el ID, desasociar si es null
         if (request.getIdAerolinea() != null) {
-            Aerolinea aerolinea = aerolineaRepository.findById(request.getIdAerolinea())
+            Aerolinea aerolinea = aerolineaRepository.findById((Integer) request.getIdAerolinea())
                     .orElseThrow(() -> new BusinessException("AEROLINEA_NO_ENCONTRADA",
                             "No existe la aerolínea con id: " + request.getIdAerolinea()));
             usuario.setAerolinea(aerolinea);

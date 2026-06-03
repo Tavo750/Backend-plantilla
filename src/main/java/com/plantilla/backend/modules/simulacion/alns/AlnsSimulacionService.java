@@ -13,7 +13,6 @@ import com.plantilla.backend.modules.envio.entity.ParametroSemaforo;
 import com.plantilla.backend.modules.envio.repository.EnvioMaletasRepository;
 import com.plantilla.backend.modules.envio.repository.ParametroSemaforoRepository;
 import com.plantilla.backend.modules.maestro.entity.PoliticaEntrega;
-import com.plantilla.backend.modules.maestro.repository.AeropuertoRepository;
 import com.plantilla.backend.modules.maestro.repository.PoliticaEntregaRepository;
 import com.plantilla.backend.modules.maestro.repository.VueloRepository;
 import com.plantilla.backend.modules.planificacion.entity.AsignacionVuelo;
@@ -70,7 +69,6 @@ public class AlnsSimulacionService {
     private static final int PERIODO_ACTUALIZACION = 100;
 
     private final BackendDataAdapter dataAdapter;
-    private final AeropuertoRepository aeropuertoRepository;
     private final VueloRepository vueloRepository;
     private final EnvioMaletasRepository envioMaletasRepository;
     private final PoliticaEntregaRepository politicaEntregaRepository;
@@ -229,7 +227,6 @@ public class AlnsSimulacionService {
             // Acumular resumen
             resumen.totalEnviosProcesados += enviosAProcesar.size();
             resumen.totalEnviosAsignados += mejorPlan.getTotalMaletasAsignadas();
-            resumen.totalEnviosNoAsignados += mejorPlan.getMaletasNoAsignadas().size();
             resumen.totalMaletasFisicasAsignadas += mejorPlan.getTotalMaletasFisicasAsignadas();
             resumen.totalMaletasFisicas += mejorPlan.getTotalMaletasFisicas();
             resumen.costoAcumulado += costoFinal;
@@ -545,7 +542,6 @@ public class AlnsSimulacionService {
     private static class ResumenAcumulado {
         int totalEnviosProcesados = 0;
         int totalEnviosAsignados = 0;
-        int totalEnviosNoAsignados = 0;
         int totalMaletasFisicasAsignadas = 0;
         int totalMaletasFisicas = 0;
         double costoAcumulado = 0;

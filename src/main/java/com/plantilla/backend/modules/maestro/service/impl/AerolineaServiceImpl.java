@@ -21,13 +21,13 @@ public class AerolineaServiceImpl implements AerolineaService {
 
     @Override
     public Aerolinea obtenerAerolineaPorId(Integer id) {
-        return aerolineaRepository.findById(id)
+        return aerolineaRepository.findById((Integer) id)
                 .orElseThrow(() -> new RuntimeException("Aerolinea no encontrada con id: " + id));
     }
 
     @Override
     public Aerolinea crearAerolinea(Aerolinea aerolinea) {
-        return aerolineaRepository.save(aerolinea);
+        return aerolineaRepository.save((Aerolinea) aerolinea);
     }
 
     @Override
@@ -42,6 +42,6 @@ public class AerolineaServiceImpl implements AerolineaService {
 
     @Override
     public void eliminarAerolinea(Integer id) {
-        aerolineaRepository.deleteById(id);
+        aerolineaRepository.deleteById((Integer) id);
     }
 }

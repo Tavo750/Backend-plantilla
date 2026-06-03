@@ -1,7 +1,6 @@
 package com.plantilla.backend.modules.envio.repository;
 
 import com.plantilla.backend.modules.envio.entity.EnvioMaletas;
-import com.plantilla.backend.shared.enums.EstadoMaleta;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 

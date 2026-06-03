@@ -28,12 +28,12 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.MySQLDialect
-        format_sql: true
+        "[format_sql]": true
         jdbc:
-          batch_size: 25             # Agrupa hasta 25 INSERTs/UPDATEs en un solo round-trip a la BD
-          batch_versioned_data: true
-        order_inserts: true          # Reordena inserts para maximizar el batching
-        order_updates: true          # Reordena updates para maximizar el batching
+          "[batch_size]": 25             # Agrupa hasta 25 INSERTs/UPDATEs en un solo round-trip a la BD
+          "[batch_versioned_data]": true
+        "[order_inserts]": true          # Reordena inserts para maximizar el batching
+        "[order_updates]": true          # Reordena updates para maximizar el batching
 
   # Cache
   cache:
@@ -45,14 +45,14 @@ spring:
       request-timeout: -1
 
 # =====================================================================
-# JWT
+# JWT (propiedades leídas por JwtTokenProvider vía @Value)
 # =====================================================================
 jwt:
   secret: ${JWT_SECRET:clave-secreta-super-segura-para-jwt-debe-tener-al-menos-256-bits-de-longitud-2024}
   expiration: ${JWT_EXPIRATION:86400000}
 
 # =====================================================================
-# CORS
+# CORS (propiedades leídas por CorsConfig vía @Value)
 # =====================================================================
 cors:
   allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:4200}

@@ -11,7 +11,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.time.LocalTime;
 import java.util.List;
 
 @Service
@@ -30,7 +29,7 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
 
     @Override
     public EnvioMaletas obtenerEnvioPorId(Integer id) {
-        return envioMaletasRepository.findById(id)
+        return envioMaletasRepository.findById((Integer) id)
                 .orElseThrow(() -> new RuntimeException("Envio de maletas no encontrado con id: " + id));
     }
 
@@ -41,7 +40,7 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
 
         // Aerolínea: usar la indicada o tomar la primera disponible automáticamente
         if (dto.getIdAerolinea() != null) {
-            envio.setAerolinea(aerolineaRepository.findById(dto.getIdAerolinea())
+            envio.setAerolinea(aerolineaRepository.findById((Integer) dto.getIdAerolinea())
                     .orElseThrow(() -> new RuntimeException("Aerolinea no encontrada")));
         } else {
             envio.setAerolinea(aerolineaRepository.findAll().stream()
@@ -49,14 +48,14 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
                     .orElseThrow(() -> new RuntimeException("No existe ninguna aerolínea registrada")));
         }
 
-        envio.setAeropuertoOrigen(aeropuertoRepository.findById(dto.getIdAeropuertoOrigen())
+        envio.setAeropuertoOrigen(aeropuertoRepository.findById((Integer) dto.getIdAeropuertoOrigen())
                 .orElseThrow(() -> new RuntimeException("Aeropuerto origen no encontrado")));
-        envio.setAeropuertoDestino(aeropuertoRepository.findById(dto.getIdAeropuertoDestino())
+        envio.setAeropuertoDestino(aeropuertoRepository.findById((Integer) dto.getIdAeropuertoDestino())
                 .orElseThrow(() -> new RuntimeException("Aeropuerto destino no encontrado")));
 
         // Política: usar la indicada o tomar la primera activa automáticamente
         if (dto.getIdPolitica() != null) {
-            envio.setPoliticaEntrega(politicaEntregaRepository.findById(dto.getIdPolitica())
+            envio.setPoliticaEntrega(politicaEntregaRepository.findById((Integer) dto.getIdPolitica())
                     .orElseThrow(() -> new RuntimeException("Politica no encontrada")));
         } else {
             envio.setPoliticaEntrega(politicaEntregaRepository.findByActivaTrue()
@@ -105,6 +104,6 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
 
     @Override
     public void eliminarEnvio(Integer id) {
-        envioMaletasRepository.deleteById(id);
+        envioMaletasRepository.deleteById((Integer) id);
     }
 }

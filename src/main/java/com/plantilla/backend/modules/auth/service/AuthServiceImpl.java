@@ -70,7 +70,7 @@ public class AuthServiceImpl implements AuthService {
         usuario.setEstado(true);
 
         if (request.getIdAerolinea() != null) {
-            Aerolinea aerolinea = aerolineaRepository.findById(request.getIdAerolinea())
+            Aerolinea aerolinea = aerolineaRepository.findById((Integer) request.getIdAerolinea())
                     .orElseThrow(() -> new BusinessException("AEROLINEA_NO_ENCONTRADA",
                             "No existe la aerolínea con id: " + request.getIdAerolinea()));
             usuario.setAerolinea(aerolinea);
