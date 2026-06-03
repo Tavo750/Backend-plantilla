@@ -42,7 +42,6 @@ spring:
     open-in-view: false           # Evita anti-patrón y ahorra recursos
     properties:
       hibernate:
-        dialect: org.hibernate.dialect.MySQLDialect
         format_sql: false
         jdbc:
           batch_size: 20

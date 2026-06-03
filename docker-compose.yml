@@ -21,6 +21,12 @@ services:
       - tasfb2b-net
     mem_limit: 512m
     mem_reservation: 256m
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${DB_USERNAME}", "-p${DB_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   backend:
     build:
@@ -31,7 +37,8 @@ services:
     profiles:
       - full
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
       # ── Perfil Spring ──────────────────────────────────────────────
       SPRING_PROFILES_ACTIVE: prod
