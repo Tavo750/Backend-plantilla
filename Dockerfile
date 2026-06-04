@@ -1,54 +1,48 @@
 # =====================================================================
-# Dockerfile - Tasf.B2B Backend (Spring Boot)
-# Build multi-etapa: compilación con Maven → runtime ligero Alpine
-# Imagen base Eclipse Temurin 21 JRE Alpine (~85 MB en runtime)
+# Dockerfile - Backend Spring Boot con tunel SSH integrado
+# El contenedor establece el tunel SSH a MySQL antes de arrancar la app
 # =====================================================================
 
-# ── Etapa 1: Compilación ─────────────────────────────────────────────
+# -- Etapa 1: Compilacion -----------------------------------------------
 FROM maven:3.9-eclipse-temurin-21-alpine AS build
 
 WORKDIR /app
 
-# Copiar solo pom.xml primero → cachear dependencias entre builds
 COPY pom.xml .
 RUN mvn dependency:go-offline -B --no-transfer-progress
 
-# Copiar código fuente y compilar (sin tests para deploy rápido)
 COPY src ./src
 RUN mvn clean package -DskipTests -B --no-transfer-progress
 
-# ── Etapa 2: Imagen de ejecución ligera ──────────────────────────────
+# -- Etapa 2: Imagen de ejecucion ligera --------------------------------
 FROM eclipse-temurin:21-jre-alpine
 
 LABEL maintainer="Tasf.B2B Team"
-LABEL description="Backend Tasf.B2B - Spring Boot 3 + Java 21"
+LABEL description="Backend Tasf.B2B - Spring Boot 3 + Java 21 + SSH tunnel"
 
 WORKDIR /app
 
-# Crear usuario no-root por seguridad (buena práctica en producción)
+# Instalar herramientas SSH y utilidades de red
+RUN apk add --no-cache openssh-client sshpass netcat-openbsd
+
+# Crear usuario no-root por seguridad
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-# Crear directorio de logs con permisos correctos
+# Crear directorio de logs
 RUN mkdir -p /app/logs && chown -R appuser:appgroup /app
 
-# Copiar solo el JAR compilado (no el .env, que viene de docker-compose)
+# Copiar el JAR compilado
 COPY --from=build /app/target/*.jar app.jar
+
+# Copiar el script de arranque
+COPY scripts/docker-start.sh /app/docker-start.sh
+RUN chmod +x /app/docker-start.sh && chown appuser:appgroup /app/docker-start.sh
+
 RUN chown appuser:appgroup /app/app.jar
 
 USER appuser
 
-# Puerto 8080 (estándar Spring Boot producción)
-EXPOSE 8080
+EXPOSE 3000
 
-# JAVA_OPTS es inyectado desde docker-compose (límite de heap)
-# -XX:+UseContainerSupport  → respeta los límites de memoria del contenedor
-# -XX:+UseG1GC              → GC eficiente en bajo heap
-# -Dspring.profiles.active  → activa el perfil de producción
-ENTRYPOINT ["sh", "-c", \
-  "java $JAVA_OPTS \
-   -XX:+UseContainerSupport \
-   -XX:MaxRAMPercentage=75.0 \
-   -XX:+UseG1GC \
-   -Djava.security.egd=file:/dev/./urandom \
-   -Dspring.profiles.active=prod \
-   -jar /app/app.jar"]
+# El script establece el tunel SSH y luego lanza Spring Boot
+ENTRYPOINT ["/app/docker-start.sh"]

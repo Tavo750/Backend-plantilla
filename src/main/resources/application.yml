@@ -34,6 +34,7 @@ spring:
     show-sql: false
     properties:
       hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
         format_sql: true
         jdbc:
           batch_size: 25             # Agrupa hasta 25 INSERTs/UPDATEs en un solo round-trip a la BD
