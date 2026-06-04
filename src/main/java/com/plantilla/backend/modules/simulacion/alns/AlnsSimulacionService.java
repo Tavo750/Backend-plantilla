@@ -35,12 +35,18 @@ import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.stereotype.Service;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.function.Consumer;
 
@@ -84,6 +90,344 @@ public class AlnsSimulacionService {
     @Transactional
     public Map<String, Object> simularPeriodo(LocalDate fechaInicio, int dias) {
         return simularPeriodoCore(fechaInicio, dias, null);
+    }
+
+    /**
+     * Ejecuta el ALNS sobre una ventana de tiempo precisa (datetime) de pedidos.
+     * Usado por el Monitoreo Mapa con planificación programada (parámetros K, Sa, Ta).
+     * NO persiste resultados en la BD — solo devuelve vuelos asignados para animación.
+     *
+     * @param ventanaInicio  Inicio exacto de la ventana (fechaRegistro &gt;=)
+     * @param ventanaFin     Fin exacto de la ventana (fechaRegistro &lt;=)
+     * @return Mapa con vuelos asignados para animación y estadísticas del ciclo
+     */
+    /**
+     * Monitoreo: carga TODOS los envíos desde ventanaInicio en adelante (sin límite superior).
+     * El ALNS procesa todo lo que haya disponible.
+     * Devuelve además {@code ultimaFechaEnvio} para que el frontend sepa desde dónde
+     * arrancar la siguiente ventana.
+     */
+    public Map<String, Object> simularDesdeVentana(LocalDateTime ventanaInicio) {
+        log.info("Monitoreo ALNS desde: {}", ventanaInicio);
+
+        // 1. Aeropuertos activos
+        Map<String, com.plantilla.backend.modules.algoritmo.alns.model.Aeropuerto> aeropuertos =
+                dataAdapter.cargarAeropuertos();
+        if (aeropuertos.isEmpty()) {
+            throw new BusinessException("No hay aeropuertos activos en la BD.");
+        }
+
+        // Sin límite superior real: carga todos los envíos disponibles desde ventanaInicio
+        LocalDateTime ventanaFin = ventanaInicio.plusYears(10);
+
+        // 2. Vuelos: rango amplio para cubrir rutas intercontinentales
+        List<com.plantilla.backend.modules.algoritmo.alns.model.Vuelo> vuelos =
+                dataAdapter.cargarVuelos(ventanaInicio, ventanaFin.plusDays(2));
+
+        // 3. Envíos: desde archivos locales o desde BD según flag
+        List<Maleta> envios = BackendApplication.CARGAR_DESDE_LOCAL
+                ? cargarEnviosDesdeArchivos(ventanaInicio, aeropuertos)
+                : dataAdapter.cargarEnvios(ventanaInicio, ventanaFin, aeropuertos);
+
+        Map<String, Object> resultado = new LinkedHashMap<>();
+        resultado.put("ventanaInicio", ventanaInicio.toString());
+        resultado.put("ventanaFin",    ventanaFin.toString());
+        resultado.put("totalEnvios",   envios.size());
+
+        if (envios.isEmpty() || vuelos.isEmpty()) {
+            log.info("Monitoreo ventana sin datos: envíos={}, vuelos={}", envios.size(), vuelos.size());
+            resultado.put("asignados",   0);
+            resultado.put("noAsignados", 0);
+            resultado.put("vuelos",      Collections.emptyList());
+            return resultado;
+        }
+
+        // 4. Ejecutar ALNS (sin persistencia)
+        FlightIndex flightIndex = dataAdapter.construirFlightIndex(vuelos);
+        PlanDeRutas planInicial = SolutionGenerator.generarPlanInicial(envios, flightIndex, aeropuertos);
+
+        PlanDeRutas mejorPlan;
+        boolean hayNoAsignados = !planInicial.getMaletasNoAsignadas().isEmpty();
+        if (planInicial.getTotalMaletasAsignadas() > 0 && hayNoAsignados) {
+            ALNSEngine engine = new ALNSEngine(
+                    MAX_ITERACIONES, PORCENTAJE_REMOCION_MIN, PORCENTAJE_REMOCION_MAX,
+                    TEMPERATURA_INICIAL, TASA_ENFRIAMIENTO, TASA_REACCION,
+                    PERIODO_ACTUALIZACION, flightIndex);
+            mejorPlan = engine.ejecutar(planInicial);
+        } else {
+            mejorPlan = planInicial;
+        }
+
+        // 5. Consolidar vuelos únicos con sus horarios para la animación del mapa
+        Map<String, Map<String, Object>> vuelosMap = new LinkedHashMap<>();
+        for (Map.Entry<Maleta, Ruta> entry : mejorPlan.getAsignaciones().entrySet()) {
+            Maleta maleta = entry.getKey();
+            Ruta   ruta   = entry.getValue();
+            for (com.plantilla.backend.modules.algoritmo.alns.model.Vuelo v : ruta.getVuelos()) {
+                String key = v.getId();
+                if (!vuelosMap.containsKey(key)) {
+                    Map<String, Object> vd = new LinkedHashMap<>();
+                    vd.put("codigoVuelo",  v.getId());
+                    vd.put("origen",       v.getOrigen());
+                    vd.put("destino",      v.getDestino());
+                    vd.put("horaSalida",   dataAdapter.toLocalDateTimeUtc(v.getHoraSalida()).toString());
+                    vd.put("horaLlegada",  dataAdapter.toLocalDateTimeUtc(v.getHoraLlegada()).toString());
+                    vd.put("totalMaletas", 0);
+                    vuelosMap.put(key, vd);
+                }
+                int prev = (int) vuelosMap.get(key).get("totalMaletas");
+                vuelosMap.get(key).put("totalMaletas", prev + maleta.getCantidad());
+            }
+        }
+
+        // Fecha del último envío (por fechaCreacionUTC en minutos desde epoch)
+        // → el frontend arranca la siguiente ventana desde aquí + 1 segundo
+        LocalDateTime ultimaFecha = envios.stream()
+                .mapToLong(Maleta::getFechaCreacionUTC)
+                .max()
+                .stream()
+                .mapToObj(minUtc -> java.time.LocalDateTime.ofEpochSecond(
+                        minUtc * 60L, 0, java.time.ZoneOffset.UTC))
+                .findFirst()
+                .orElse(ventanaFin);
+
+        resultado.put("asignados",        mejorPlan.getTotalMaletasAsignadas());
+        resultado.put("noAsignados",      mejorPlan.getMaletasNoAsignadas().size());
+        resultado.put("vuelos",           new ArrayList<>(vuelosMap.values()));
+        resultado.put("ultimaFechaEnvio", ultimaFecha.toString());
+
+        log.info("Monitoreo resultado: {} envíos, {} asignados, {} vuelos, última fecha {}",
+                envios.size(), mejorPlan.getTotalMaletasAsignadas(), vuelosMap.size(), ultimaFecha);
+        return resultado;
+    }
+
+    /**
+     * Lee envíos directamente de los archivos TXT en classpath:data/_envios_preliminar_/
+     * sin pasar por la BD.  Solo incluye envíos con fechaCreación >= desdeUtc.
+     *
+     * Formato de línea: 000000001-20260102-00-53-LKPR-002-0012655
+     * Índices:          [0]=id  [1]=yyyyMMdd  [2]=HH  [3]=mm  [4]=destinoOACI  [5]=cantidad  [6]=cliente
+     * Origen: extraído del nombre del archivo (_envios_XXXX_.txt).
+     */
+    private List<Maleta> cargarEnviosDesdeArchivos(LocalDateTime desdeUtc,
+                                                    Map<String, Aeropuerto> aeropuertos) {
+        List<Maleta> resultado = new ArrayList<>();
+        DateTimeFormatter fmtFecha = DateTimeFormatter.BASIC_ISO_DATE;
+        long desdeMin = dataAdapter.toMinutosUtcDesdeEpoch(desdeUtc);
+
+        try {
+            PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
+            Resource[] resources = resolver.getResources(
+                    "classpath:data/_envios_preliminar_/_envios_*.txt");
+
+            for (Resource res : resources) {
+                String filename = res.getFilename();
+                if (filename == null) continue;
+
+                // Extraer OACI del nombre: "_envios_SPIM_.txt" → "SPIM"
+                String origenOaci = extraerOaciDeNombreArchivo(filename);
+                if (origenOaci == null) continue;
+
+                Aeropuerto aeroOrigen = aeropuertos.get(origenOaci);
+                if (aeroOrigen == null) continue;
+
+                try (BufferedReader br = new BufferedReader(
+                        new InputStreamReader(res.getInputStream()))) {
+                    String linea;
+                    while ((linea = br.readLine()) != null) {
+                        linea = linea.trim();
+                        if (linea.isBlank() || linea.startsWith("//")) continue;
+
+                        String[] p = linea.split("-");
+                        if (p.length != 7) continue;
+
+                        LocalDate fecha = LocalDate.parse(p[1].trim(), fmtFecha);
+                        int hora   = Integer.parseInt(p[2].trim());
+                        int minuto = Integer.parseInt(p[3].trim());
+                        String destOaci = p[4].trim().toUpperCase();
+                        int cantidad    = Integer.parseInt(p[5].trim());
+                        String idCliente = p[6].trim();
+
+                        Aeropuerto aeroDest = aeropuertos.get(destOaci);
+                        if (aeroDest == null) continue;
+
+                        // Hora local → UTC usando GMT del aeropuerto origen
+                        LocalDateTime horaLocal = LocalDateTime.of(fecha, LocalTime.of(hora, minuto));
+                        LocalDateTime horaUtc   = horaLocal.minusHours(aeroOrigen.getGmtOffset());
+
+                        long fechaCreacionMin = dataAdapter.toMinutosUtcDesdeEpoch(horaUtc);
+                        if (fechaCreacionMin < desdeMin) continue; // anterior a la ventana
+
+                        int slaMin        = aeroOrigen.calcularSLA(aeroDest);
+                        int slaDeadline   = (int) (fechaCreacionMin + slaMin);
+                        int prioridad     = cantidad >= 5 ? 1 : cantidad >= 3 ? 2 : 3;
+                        String id         = "F-" + origenOaci + "-" + p[0].trim();
+
+                        resultado.add(new Maleta(id, origenOaci, destOaci,
+                                fechaCreacionMin, slaDeadline, prioridad, cantidad, idCliente));
+                    }
+                } catch (Exception ex) {
+                    log.warn("Error leyendo archivo {}: {}", filename, ex.getMessage());
+                }
+            }
+        } catch (Exception ex) {
+            log.error("Error accediendo a archivos de envíos: {}", ex.getMessage());
+        }
+
+        log.info("Envíos cargados desde archivos (desde {}): {}", desdeUtc, resultado.size());
+        return resultado;
+    }
+
+    private static String extraerOaciDeNombreArchivo(String nombre) {
+        int ini = nombre.indexOf("_envios_");
+        if (ini < 0) return null;
+        ini += 8;
+        int fin = nombre.lastIndexOf("_");
+        if (fin <= ini) return null;
+        return nombre.substring(ini, fin).toUpperCase();
+    }
+
+    /**
+     * Versión para el Monitoreo Mapa con límite de tiempo real.
+     *
+     * Procesa los envíos día a día (igual que simularPeriodoCore) pero se detiene
+     * en el límite de {@code tiempoLimiteMs} ms antes de arrancar un nuevo día.
+     * Devuelve los vuelos de los días completados y la fecha de inicio del siguiente ciclo.
+     *
+     * @param ventanaInicio  Inicio de la ventana de envíos a procesar
+     * @param tiempoLimiteMs Tiempo máximo en milisegundos (SA × 60 000)
+     */
+    @jakarta.transaction.Transactional
+    public Map<String, Object> simularDesdeVentanaConLimite(
+            LocalDateTime ventanaInicio, long tiempoLimiteMs) {
+
+        long deadline = System.currentTimeMillis() + tiempoLimiteMs;
+
+        log.info("Monitoreo ALNS (con límite {}ms) desde {}", tiempoLimiteMs, ventanaInicio);
+
+        // 1. Aeropuertos
+        Map<String, Aeropuerto> aeropuertos = dataAdapter.cargarAeropuertos();
+        if (aeropuertos.isEmpty()) {
+            return resultadoVacio(ventanaInicio, "Sin aeropuertos activos");
+        }
+
+        // 2. Vuelos (rango amplio para cubrir todo el horizonte de datos)
+        LocalDateTime ventanaFin = ventanaInicio.plusYears(10);
+        List<com.plantilla.backend.modules.algoritmo.alns.model.Vuelo> vuelos =
+                dataAdapter.cargarVuelos(ventanaInicio, ventanaFin.plusDays(2));
+
+        // 3. Envíos (desde archivos o BD según flag)
+        List<Maleta> todosEnvios = BackendApplication.CARGAR_DESDE_LOCAL
+                ? cargarEnviosDesdeArchivos(ventanaInicio, aeropuertos)
+                : dataAdapter.cargarEnvios(ventanaInicio, ventanaFin, aeropuertos);
+
+        if (todosEnvios.isEmpty() || vuelos.isEmpty()) {
+            log.info("Monitoreo sin datos: envíos={}, vuelos={}", todosEnvios.size(), vuelos.size());
+            return resultadoVacio(ventanaInicio, null);
+        }
+
+        // 4. Agrupar envíos por día e iterar con límite de tiempo
+        FlightIndex flightIndex = dataAdapter.construirFlightIndex(vuelos);
+        Map<Integer, List<Maleta>> enviosPorDia = agruparPorDia(todosEnvios);
+
+        List<Integer> diasOrdenados = new java.util.ArrayList<>(enviosPorDia.keySet());
+        Collections.sort(diasOrdenados);
+
+        Map<String, Map<String, Object>> vuelosMap = new LinkedHashMap<>();
+        List<Maleta> arrastre = new ArrayList<>();
+        int totalAsignados = 0;
+        int ultimoDiaIndex = -1;
+
+        for (int diaIndex : diasOrdenados) {
+            // Detener si el tiempo disponible se agotó antes de procesar este día
+            if (System.currentTimeMillis() >= deadline) {
+                log.info("Monitoreo: límite de tiempo alcanzado, días procesados hasta índice {}",
+                        ultimoDiaIndex);
+                break;
+            }
+
+            List<Maleta> enviosDelDia = enviosPorDia.get(diaIndex);
+            List<Maleta> aProcesar = new ArrayList<>(arrastre);
+            aProcesar.addAll(enviosDelDia);
+            arrastre.clear();
+
+            if (aProcesar.isEmpty()) continue;
+
+            PlanDeRutas planInicial = SolutionGenerator.generarPlanInicial(
+                    aProcesar, flightIndex, aeropuertos);
+
+            PlanDeRutas mejorPlan;
+            if (planInicial.getTotalMaletasAsignadas() > 0
+                    && !planInicial.getMaletasNoAsignadas().isEmpty()) {
+                ALNSEngine engine = new ALNSEngine(
+                        MAX_ITERACIONES, PORCENTAJE_REMOCION_MIN, PORCENTAJE_REMOCION_MAX,
+                        TEMPERATURA_INICIAL, TASA_ENFRIAMIENTO, TASA_REACCION,
+                        PERIODO_ACTUALIZACION, flightIndex);
+                mejorPlan = engine.ejecutar(planInicial);
+            } else {
+                mejorPlan = planInicial;
+            }
+
+            // Acumular vuelos únicos
+            for (Map.Entry<Maleta, Ruta> entry : mejorPlan.getAsignaciones().entrySet()) {
+                Maleta maleta = entry.getKey();
+                Ruta ruta = entry.getValue();
+                for (com.plantilla.backend.modules.algoritmo.alns.model.Vuelo v : ruta.getVuelos()) {
+                    String key = v.getId();
+                    if (!vuelosMap.containsKey(key)) {
+                        Map<String, Object> vd = new LinkedHashMap<>();
+                        vd.put("codigoVuelo", v.getId());
+                        vd.put("origen",      v.getOrigen());
+                        vd.put("destino",     v.getDestino());
+                        vd.put("horaSalida",  dataAdapter.toLocalDateTimeUtc(v.getHoraSalida()).toString());
+                        vd.put("horaLlegada", dataAdapter.toLocalDateTimeUtc(v.getHoraLlegada()).toString());
+                        vd.put("totalMaletas", 0);
+                        vuelosMap.put(key, vd);
+                    }
+                    int prev = (int) vuelosMap.get(key).get("totalMaletas");
+                    vuelosMap.get(key).put("totalMaletas", prev + maleta.getCantidad());
+                }
+            }
+
+            totalAsignados += mejorPlan.getTotalMaletasAsignadas();
+            arrastre.addAll(mejorPlan.getMaletasNoAsignadas());
+            ultimoDiaIndex = diaIndex;
+        }
+
+        // ultimaFechaEnvio = inicio del siguiente día no procesado (frontera limpia para el próximo ciclo)
+        LocalDateTime siguienteVentana;
+        if (ultimoDiaIndex >= 0) {
+            siguienteVentana = dataAdapter.toLocalDateTimeUtc((long) (ultimoDiaIndex + 1) * 1440L);
+        } else {
+            siguienteVentana = ventanaInicio.plusDays(1);
+        }
+
+        int diasProcesados = ultimoDiaIndex >= 0
+                ? (ultimoDiaIndex - diasOrdenados.get(0) + 1) : 0;
+
+        Map<String, Object> resultado = new LinkedHashMap<>();
+        resultado.put("ventanaInicio",    ventanaInicio.toString());
+        resultado.put("diasProcesados",   diasProcesados);
+        resultado.put("asignados",        totalAsignados);
+        resultado.put("noAsignados",      arrastre.size());
+        resultado.put("vuelos",           new ArrayList<>(vuelosMap.values()));
+        resultado.put("ultimaFechaEnvio", siguienteVentana.toString());
+
+        log.info("Monitoreo completado: {} días, {} vuelos, {} asignados, siguiente ventana {}",
+                diasProcesados, vuelosMap.size(), totalAsignados, siguienteVentana);
+        return resultado;
+    }
+
+    private Map<String, Object> resultadoVacio(LocalDateTime ventanaInicio, String motivo) {
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("ventanaInicio",    ventanaInicio.toString());
+        r.put("diasProcesados",   0);
+        r.put("asignados",        0);
+        r.put("noAsignados",      0);
+        r.put("vuelos",           Collections.emptyList());
+        r.put("ultimaFechaEnvio", ventanaInicio.plusDays(1).toString());
+        if (motivo != null) r.put("motivo", motivo);
+        return r;
     }
 
     /**
