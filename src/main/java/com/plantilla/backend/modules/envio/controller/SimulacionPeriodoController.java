@@ -98,7 +98,7 @@ public class SimulacionPeriodoController {
                         fechaInicio, dias,
                         diaData -> {
                             try {
-                                emitter.send(SseEmitter.event().name("dia").data(diaData));
+                                emitter.send(SseEmitter.event().name("dia").data((Object) diaData));
                             } catch (IOException e) {
                                 log.warn("Error enviando evento SSE 'dia': {}", e.getMessage());
                             }
@@ -106,7 +106,7 @@ public class SimulacionPeriodoController {
                 );
 
                 // Evento final con resumen completo
-                emitter.send(SseEmitter.event().name("fin").data(resultado));
+                emitter.send(SseEmitter.event().name("fin").data((Object) resultado));
                 emitter.complete();
 
             } catch (Exception e) {

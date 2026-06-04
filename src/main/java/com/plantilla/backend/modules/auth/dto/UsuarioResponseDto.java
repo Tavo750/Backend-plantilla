@@ -6,22 +6,16 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * DTO para respuesta de inicio de sesión.
- * Contiene el token JWT y los datos del usuario autenticado.
- * Principio SOLID (S): Solo transporta datos de respuesta de autenticación.
+ * DTO de respuesta para operaciones CRUD de usuarios.
+ * No expone la contraseña ni datos sensibles internos.
+ * Principio SOLID (S): Solo transporta datos de salida del usuario.
  */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class LoginResponse {
+public class UsuarioResponseDto {
 
-    private String token;
-
-    @Builder.Default
-    private String tipo = "Bearer";
-
-    // Datos del usuario (coincide con interfaz Usuario del frontend)
     private Long id;
     private String nombre;
     private String apellidoPaterno;
@@ -32,6 +26,8 @@ public class LoginResponse {
     private String fotoUrl;
     private Boolean estado;
 
-    // Aerolínea asociada al usuario
+    // Datos de la aerolínea asociada
     private Integer idAerolinea;
+    private String nombreAerolinea;
+    private String codigoAerolinea;
 }

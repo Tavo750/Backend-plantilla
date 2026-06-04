@@ -8,7 +8,6 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-import java.math.BigDecimal;
 
 /**
  * Un único aeropuerto por ciudad. Capacidad de almacenamiento entre 500 y 800 maletas (RAL-02).

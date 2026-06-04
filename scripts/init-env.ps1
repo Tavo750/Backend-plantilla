@@ -34,10 +34,10 @@ if (Get-Command mvn -ErrorAction SilentlyContinue) {
     Write-Host "  Maven no encontrado. Instálalo o usa el wrapper ./mvnw" -ForegroundColor Red
 }
 
-# Levantar PostgreSQL con Docker Compose
-Write-Host "[4/4] Levantando PostgreSQL con Docker Compose..." -ForegroundColor Yellow
+# Levantar MySQL con Docker Compose
+Write-Host "[4/4] Levantando MySQL con Docker Compose..." -ForegroundColor Yellow
 $projectRoot = Split-Path -Parent $PSScriptRoot
-docker compose -f "$projectRoot\docker-compose.yml" up -d postgres
+docker compose -f "$projectRoot\docker-compose.yml" up -d db
 
 Write-Host "`n=============================================" -ForegroundColor Cyan
 Write-Host "  Entorno listo. Ejecuta:" -ForegroundColor Cyan
