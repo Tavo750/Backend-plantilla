@@ -13,7 +13,7 @@ echo "    Usuario  : ${SSH_USER}"
 # -N  : no ejecutar comandos remotos
 # -f  : ir a background
 # -L  : reenviar 127.0.0.1:3306 local -> 127.0.0.1:3306 en el servidor SSH
-sshpass -e ssh -N -f \
+sshpass -p "${SSH_PASSWORD}" ssh -N -f \
   -o StrictHostKeyChecking=no \
   -o ServerAliveInterval=30 \
   -o ServerAliveCountMax=5 \
