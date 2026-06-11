@@ -55,11 +55,13 @@ public class ImportacionDatosController {
             @RequestParam(defaultValue = "5")
             Integer dias
     ) {
+        Integer idAerolinea = importacionEnviosService.obtenerIdAerolineaAutenticado();
         Map<String, Object> resultado = importacionEnviosService.importarEnvios(
                 archivo,
                 origen,
                 fechaInicio,
-                dias
+                dias,
+                idAerolinea
         );
 
         return ResponseEntity.ok(

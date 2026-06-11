@@ -1,5 +1,7 @@
 package com.plantilla.backend.modules.envio.service;
 
+import com.plantilla.backend.modules.auth.entity.Usuario;
+import com.plantilla.backend.modules.auth.repository.UsuarioRepository;
 import com.plantilla.backend.modules.maestro.entity.Aeropuerto;
 import com.plantilla.backend.modules.maestro.repository.AeropuertoRepository;
 import jakarta.transaction.Transactional;
@@ -8,6 +10,7 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.ResourcePatternResolver;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
@@ -29,13 +32,15 @@ public class ImportacionEnviosService {
     private final ResourcePatternResolver resourceLoader;
     private final AeropuertoRepository aeropuertoRepository;
     private final JdbcTemplate jdbcTemplate;
+    private final UsuarioRepository usuarioRepository;
 
     @Transactional
     public Map<String, Object> importarEnvios(
             String nombreArchivo,
             String codigoOrigen,
             LocalDate fechaInicio,
-            int dias
+            int dias,
+            Integer idAerolinea
     ) {
         if (dias <= 0) {
             throw new IllegalArgumentException("La cantidad de días debe ser mayor a 0.");
@@ -60,7 +65,6 @@ public class ImportacionEnviosService {
             throw new IllegalStateException("No existe el aeropuerto origen: " + codigoOrigen);
         }
 
-        Integer idAerolinea = obtenerIdAerolineaDemo();
         Integer idPolitica = obtenerIdPoliticaActiva();
 
         LocalDate fechaFin = fechaInicio.plusDays(dias);
@@ -182,15 +186,19 @@ public class ImportacionEnviosService {
         return resultado;
     }
 
-    private Integer obtenerIdAerolineaDemo() {
-        try {
-            return jdbcTemplate.queryForObject(
-                    "SELECT id_aerolinea FROM aerolinea WHERE codigo = 'AERO_DEMO' LIMIT 1",
-                    Integer.class
-            );
-        } catch (EmptyResultDataAccessException e) {
-            throw new IllegalStateException("No existe la aerolínea AERO_DEMO. Ejecuta primero el INSERT base.");
+    /**
+     * Obtiene el id_aerolinea del usuario autenticado en el contexto de seguridad.
+     * Lanza IllegalStateException si el usuario no tiene aerolínea asignada.
+     */
+    public Integer obtenerIdAerolineaAutenticado() {
+        String correo = SecurityContextHolder.getContext().getAuthentication().getName();
+        Usuario usuario = usuarioRepository.findByCorreo(correo)
+                .orElseThrow(() -> new IllegalStateException("Usuario autenticado no encontrado: " + correo));
+        if (usuario.getAerolinea() == null) {
+            throw new IllegalStateException(
+                    "El usuario autenticado no tiene una aerolínea asignada.");
         }
+        return usuario.getAerolinea().getIdAerolinea();
     }
 
     private Integer obtenerIdPoliticaActiva() {
@@ -248,6 +256,8 @@ public class ImportacionEnviosService {
         List<String> procesados = new ArrayList<>();
         List<String> omitidos   = new ArrayList<>();
 
+        Integer idAerolinea = obtenerIdAerolineaAutenticado();
+
         for (Resource archivo : archivos) {
             String nombre = archivo.getFilename();
             if (nombre == null) continue;
@@ -256,7 +266,7 @@ public class ImportacionEnviosService {
 
             try {
                 Map<String, Object> res = importarEnvios(
-                        "_envios_preliminar_/" + nombre, oaci, fechaInicio, dias);
+                        "_envios_preliminar_/" + nombre, oaci, fechaInicio, dias, idAerolinea);
                 totalInsertados   += (int) res.get("enviosInsertados");
                 totalLeidas       += (int) res.get("lineasLeidas");
                 totalOmitidas     += (int) res.get("lineasOmitidas");
