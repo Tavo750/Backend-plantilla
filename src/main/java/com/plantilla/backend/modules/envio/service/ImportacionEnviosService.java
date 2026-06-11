@@ -188,10 +188,15 @@ public class ImportacionEnviosService {
 
     /**
      * Obtiene el id_aerolinea del usuario autenticado en el contexto de seguridad.
-     * Lanza IllegalStateException si el usuario no tiene aerolínea asignada.
+     * Lanza IllegalStateException si el usuario no está autenticado o no tiene aerolínea asignada.
      */
     public Integer obtenerIdAerolineaAutenticado() {
-        String correo = SecurityContextHolder.getContext().getAuthentication().getName();
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getName())) {
+            throw new IllegalStateException(
+                    "Debe estar autenticado para realizar esta operación. Verifique que el token JWT sea válido y no haya expirado.");
+        }
+        String correo = auth.getName();
         Usuario usuario = usuarioRepository.findByCorreo(correo)
                 .orElseThrow(() -> new IllegalStateException("Usuario autenticado no encontrado: " + correo));
         if (usuario.getAerolinea() == null) {
