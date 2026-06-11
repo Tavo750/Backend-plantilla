@@ -141,7 +141,7 @@ public class ImportacionVuelosService {
         }
 
         String sql = """
-                INSERT INTO vuelo (
+                INSERT IGNORE INTO vuelo (
                     codigo_vuelo,
                     id_aeropuerto_origen,
                     id_aeropuerto_destino,
@@ -153,7 +153,6 @@ public class ImportacionVuelosService {
                     es_intercontinental
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (codigo_vuelo) DO NOTHING
                 """;
 
         int vuelosInsertados = 0;
