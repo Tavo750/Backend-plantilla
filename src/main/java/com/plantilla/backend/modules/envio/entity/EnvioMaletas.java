@@ -21,7 +21,8 @@ import java.time.LocalTime;
  * maletas.
  */
 @Entity
-@Table(name = "envio_maletas")
+@Table(name = "envio_maletas",
+       indexes = @Index(name = "idx_envio_fecha_registro", columnList = "fecha_registro"))
 @Getter
 @Setter
 @NoArgsConstructor
