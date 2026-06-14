@@ -1,15 +1,19 @@
 package com.plantilla.backend.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.plantilla.backend.modules.envio.service.MonitoreoMapaService;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -30,10 +34,34 @@ public class MonitoreoWebSocketHandler extends TextWebSocketHandler {
     private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
     private final ObjectMapper objectMapper; // inyectado por Spring — incluye JavaTimeModule
 
+    // Lazy: evita ciclo de dependencia circular (MonitoreoMapaService → ws → MonitoreoMapaService)
+    @Autowired
+    private ApplicationContext appContext;
+
+    private MonitoreoMapaService getMonitoreoService() {
+        return appContext.getBean(MonitoreoMapaService.class);
+    }
+
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         sessions.add(session);
         log.debug("WS conectado: {} | total sesiones: {}", session.getId(), sessions.size());
+
+        // Si el monitoreo ya está corriendo, enviar el snapshot actual al cliente recién conectado.
+        // Esto evita la race condition donde el PLAN se emitió antes de que el WS conectara.
+        try {
+            MonitoreoMapaService svc = getMonitoreoService();
+            Map<String, Object> snapshot = svc.obtenerSnapshot();
+            Boolean activo = (Boolean) snapshot.get("activo");
+            if (Boolean.TRUE.equals(activo)) {
+                snapshot.put("tipo", "PLAN"); // reutilizar el mismo handler del front
+                String json = objectMapper.writeValueAsString(snapshot);
+                session.sendMessage(new TextMessage(json));
+                log.debug("Snapshot enviado al cliente recién conectado: {}", session.getId());
+            }
+        } catch (Exception e) {
+            log.warn("No se pudo enviar snapshot al conectar sesión {}: {}", session.getId(), e.getMessage());
+        }
     }
 
     @Override
