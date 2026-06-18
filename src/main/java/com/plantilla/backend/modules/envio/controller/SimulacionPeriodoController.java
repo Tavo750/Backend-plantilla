@@ -1,7 +1,9 @@
 package com.plantilla.backend.modules.envio.controller;
 
 import com.plantilla.backend.modules.simulacion.alns.AlnsSimulacionService;
+import com.plantilla.backend.modules.simulacion.service.CancelacionVueloService;
 import com.plantilla.backend.shared.dto.ApiResponse;
+import com.plantilla.backend.shared.enums.Continente;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -15,7 +17,9 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
@@ -39,6 +43,7 @@ public class SimulacionPeriodoController {
     private static final Logger log = LoggerFactory.getLogger(SimulacionPeriodoController.class);
 
     private final AlnsSimulacionService alnsSimulacionService;
+    private final CancelacionVueloService cancelacionVueloService;
 
     @PostMapping("/periodo")
     @Operation(
@@ -75,6 +80,9 @@ public class SimulacionPeriodoController {
             @RequestParam(defaultValue = "2026-01-02")
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
             LocalDate fechaInicio,
+
+            @RequestParam(defaultValue = "00:00")
+            String horaInicio,
 
             @RequestParam(defaultValue = "5")
             Integer dias
@@ -123,5 +131,46 @@ public class SimulacionPeriodoController {
         });
 
         return emitter;
+    }
+
+    @GetMapping("/vuelos-cancelables")
+    @Operation(
+            summary = "Obtener vuelos cancelables",
+            description = "Lista vuelos que aún no han despegado y pueden ser cancelados. " +
+                    "Se pueden filtrar por aeropuerto de origen o continente."
+    )
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> obtenerVuelosCancelables(
+            @RequestParam
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+            LocalDateTime horaActualSimulada,
+
+            @RequestParam(required = false)
+            Integer idAeropuerto,
+
+            @RequestParam(required = false)
+            Continente continente
+    ) {
+        List<Map<String, Object>> vuelos = cancelacionVueloService.obtenerVuelosCancelables(
+                horaActualSimulada, idAeropuerto, continente);
+
+        return ResponseEntity.ok(
+                ApiResponse.success("Vuelos cancelables obtenidos correctamente", vuelos)
+        );
+    }
+
+    @PostMapping("/cancelar-vuelo")
+    @Operation(
+            summary = "Cancelar vuelo y replanificar maletas",
+            description = "Cancela un vuelo y marca sus asignaciones como canceladas. " +
+                    "Las maletas serán replanificadas automáticamente en otros vuelos."
+    )
+    public ResponseEntity<ApiResponse<Map<String, Object>>> cancelarVuelo(
+            @RequestParam Integer idVuelo
+    ) {
+        Map<String, Object> resultado = cancelacionVueloService.cancelarVueloYReplanificar(idVuelo);
+
+        return ResponseEntity.ok(
+                ApiResponse.success("Vuelo cancelado y replanificación iniciada", resultado)
+        );
     }
 }

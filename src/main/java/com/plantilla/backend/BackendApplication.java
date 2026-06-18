@@ -38,7 +38,7 @@ public class BackendApplication {
      * </ul>
      * No tiene ningún efecto sobre cuántos pedidos procesa el algoritmo.
      */
-    public static int K = 90;
+    public static int K = 120;
 
     /**
      * SA — Intervalo en minutos REALES entre ejecuciones del algoritmo ALNS.
