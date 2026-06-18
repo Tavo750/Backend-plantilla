@@ -47,8 +47,7 @@ public class ImportacionVuelosService {
                 .stream()
                 .collect(Collectors.toMap(
                         a -> a.getCodigoOaci().toUpperCase(),
-                        a -> a
-                ));
+                        a -> a));
 
         int lineasLeidas = 0;
         int lineasOmitidas = 0;
@@ -98,14 +97,12 @@ public class ImportacionVuelosService {
                     LocalDateTime salidaUtc = convertirHoraLocalAUtc(
                             fechaOperacion,
                             horaSalidaLocal,
-                            origen.getGmt()
-                    );
+                            origen.getGmt());
 
                     LocalDateTime llegadaUtc = convertirHoraLocalAUtc(
                             fechaOperacion,
                             horaLlegadaLocal,
-                            destino.getGmt()
-                    );
+                            destino.getGmt());
 
                     while (!llegadaUtc.isAfter(salidaUtc)) {
                         llegadaUtc = llegadaUtc.plusDays(1);
@@ -116,13 +113,12 @@ public class ImportacionVuelosService {
                             codigoDestino,
                             fechaOperacion,
                             horaSalidaLocal,
-                            numeroLinea
-                    );
+                            numeroLinea);
 
                     BigDecimal duracionHoras = calcularDuracionHoras(salidaUtc, llegadaUtc);
                     boolean esIntercontinental = !origen.getContinente().equals(destino.getContinente());
 
-                    vuelosBatch.add(new Object[]{
+                    vuelosBatch.add(new Object[] {
                             codigoVuelo,
                             origen.getIdAeropuerto(),
                             destino.getIdAeropuerto(),
@@ -153,6 +149,15 @@ public class ImportacionVuelosService {
                     es_intercontinental
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    id_aeropuerto_origen = VALUES(id_aeropuerto_origen),
+                    id_aeropuerto_destino = VALUES(id_aeropuerto_destino),
+                    hora_salida = VALUES(hora_salida),
+                    hora_llegada = VALUES(hora_llegada),
+                    duracion_horas = VALUES(duracion_horas),
+                    capacidad_maxima = VALUES(capacidad_maxima),
+                    estado = VALUES(estado),
+                    es_intercontinental = VALUES(es_intercontinental)
                 """;
 
         int vuelosInsertados = 0;
@@ -202,8 +207,7 @@ public class ImportacionVuelosService {
             String destino,
             LocalDate fecha,
             LocalTime horaSalida,
-            int numeroLinea
-    ) {
+            int numeroLinea) {
         return origen + "-" +
                 destino + "-" +
                 fecha.format(DateTimeFormatter.BASIC_ISO_DATE) + "-" +
