@@ -9,7 +9,7 @@ server:
     context-path: /api
 
 # =====================================================================
-# Spring Data Source - MySQL
+# Spring Data Source - MySQL  --Conexion a base de datos mysql
 # =====================================================================
 spring:
   config:
@@ -52,7 +52,7 @@ spring:
       request-timeout: -1
 
 # =====================================================================
-# JWT
+# JWT 
 # =====================================================================
 jwt:
   secret: ${JWT_SECRET:clave-secreta-super-segura-para-jwt-debe-tener-al-menos-256-bits-de-longitud-2024}
