@@ -36,4 +36,7 @@ public interface VueloRepository extends JpaRepository<Vuelo, Integer> {
      * Lista los vuelos cuya hora de salida está dentro del rango [desde, hasta] y un estado dado.
      */
     List<Vuelo> findByHoraSalidaBetweenAndEstado(LocalDateTime desde, LocalDateTime hasta, EstadoVuelo estado);
+
+    /** Vuelo con la hora de salida más temprana — define el inicio real útil de la simulación. */
+    Optional<Vuelo> findTopByOrderByHoraSalidaAsc();
 }

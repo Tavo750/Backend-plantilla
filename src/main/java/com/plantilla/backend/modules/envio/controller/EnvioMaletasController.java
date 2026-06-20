@@ -37,6 +37,14 @@ public class EnvioMaletasController {
         return ResponseEntity.ok(ApiResponse.created(envioMaletasService.crearEnvio(envioDTO)));
     }
 
+    @PostMapping("/batch")
+    @Operation(summary = "Crear envios en lote",
+               description = "Crea múltiples envíos en una sola transacción. Usado por la carga masiva CSV.")
+    public ResponseEntity<ApiResponse<List<EnvioMaletas>>> crearEnviosBatch(
+            @RequestBody List<com.plantilla.backend.modules.envio.dto.EnvioMaletasCreateDTO> envios) {
+        return ResponseEntity.ok(ApiResponse.created(envioMaletasService.crearEnviosBatch(envios)));
+    }
+
     @PutMapping("/{id}")
     @Operation(summary = "Actualizar envio")
     public ResponseEntity<ApiResponse<EnvioMaletas>> actualizarEnvio(@PathVariable Integer id,

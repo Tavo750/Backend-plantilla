@@ -153,7 +153,15 @@ public class ImportacionVuelosService {
                     es_intercontinental
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (codigo_vuelo) DO NOTHING
+                ON DUPLICATE KEY UPDATE
+                    id_aeropuerto_origen = VALUES(id_aeropuerto_origen),
+                    id_aeropuerto_destino = VALUES(id_aeropuerto_destino),
+                    hora_salida = VALUES(hora_salida),
+                    hora_llegada = VALUES(hora_llegada),
+                    duracion_horas = VALUES(duracion_horas),
+                    capacidad_maxima = VALUES(capacidad_maxima),
+                    estado = VALUES(estado),
+                    es_intercontinental = VALUES(es_intercontinental)
                 """;
 
         int vuelosInsertados = 0;

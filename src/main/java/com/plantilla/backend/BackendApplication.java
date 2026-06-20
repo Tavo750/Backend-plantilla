@@ -28,9 +28,6 @@ public class BackendApplication {
      * </ul>
      */
     public static boolean GUARDAR_EN_BD = false;
-
-    // ── Parámetros de Planificación Programada (Monitoreo Mapa) ──────────
-
     /**
      * K — Factor de velocidad de animación en el Monitoreo Mapa.
      * Controla cuántos segundos simulados avanzan por cada segundo real en la pantalla.
@@ -41,7 +38,7 @@ public class BackendApplication {
      * </ul>
      * No tiene ningún efecto sobre cuántos pedidos procesa el algoritmo.
      */
-    public static int K = 60;
+    public static int K = 120;
 
     /**
      * SA — Intervalo en minutos REALES entre ejecuciones del algoritmo ALNS.
@@ -49,16 +46,6 @@ public class BackendApplication {
      * envíos pendientes desde la última ventana procesada.
      */
     public static int SA = 5;
-
-    /**
-     * CARGAR_DESDE_LOCAL — Controla la fuente de datos de envíos para el Monitoreo Mapa.
-     * <ul>
-     *   <li>{@code true}  — lee los envíos directamente de los archivos TXT en
-     *       {@code classpath:data/_envios_preliminar_/} sin tocar la BD.</li>
-     *   <li>{@code false} — lee los envíos desde la tabla {@code envio_maletas} de la BD.</li>
-     * </ul>
-     */
-    public static boolean CARGAR_DESDE_LOCAL = true;
 
     // =====================================================================
 
