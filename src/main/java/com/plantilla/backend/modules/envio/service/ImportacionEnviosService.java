@@ -228,10 +228,12 @@ public class ImportacionEnviosService {
         int totalAeropuertosProcesados = 0;
         int totalEnviosInsertados = 0;
 
+        Integer idAerolinea = obtenerIdAerolineaAutenticado();
+
         for (Aeropuerto aero : aeropuertos) {
             try {
                 String archivo = "_envios_" + aero.getCodigoOaci() + "_.txt";
-                Map<String, Object> resultado = importarEnvios(archivo, aero.getCodigoOaci(), fechaInicio, dias);
+                Map<String, Object> resultado = importarEnvios(archivo, aero.getCodigoOaci(), fechaInicio, dias, idAerolinea);
                 resultadosPorAeropuerto.add(resultado);
                 totalAeropuertosProcesados++;
                 totalEnviosInsertados += ((Number) resultado.get("enviosInsertados")).intValue();
