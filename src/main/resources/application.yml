@@ -9,15 +9,15 @@ server:
     context-path: /api
 
 # =====================================================================
-# Spring Data Source - MySQL  --Conexion a base de datos mysql
+# Spring Data Source - PostgreSQL
 # =====================================================================
 spring:
   config:
     import: optional:file:.env[.properties], optional:file:.env
   datasource:
-    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:plantilla_db}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=America/Lima
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:plantilla_db}
     username: ${DB_USERNAME:root}
-    password: ${DB_PASSWORD:root}
+    password: ${DB_PASSWORD:password}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       connection-timeout: 30000      # Tiempo máximo esperando conexión del pool (30 s)
@@ -36,20 +36,10 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.MySQLDialect
         format_sql: true
-        jdbc:
-          batch_size: 25             # Agrupa hasta 25 INSERTs/UPDATEs en un solo round-trip a la BD
-          batch_versioned_data: true
-        order_inserts: true          # Reordena inserts para maximizar el batching
-        order_updates: true          # Reordena updates para maximizar el batching
 
   # Cache
   cache:
     type: simple
-
-  # MVC / Async — sin límite de tiempo para peticiones SSE de larga duración (simulaciones multi-día)
-  mvc:
-    async:
-      request-timeout: -1
 
 # =====================================================================
 # JWT 
