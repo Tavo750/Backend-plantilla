@@ -3,6 +3,7 @@ package com.plantilla.backend.modules.envio.repository;
 import com.plantilla.backend.modules.envio.entity.EnvioMaletas;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
@@ -14,6 +15,17 @@ import java.util.List;
  */
 @Repository
 public interface EnvioMaletasRepository extends JpaRepository<EnvioMaletas, Integer> {
+
+    /**
+     * Carga todos los envíos junto con sus relaciones en una sola consulta SQL
+     * (evita el problema N+1 que agota el pool de conexiones).
+     */
+    @Query("SELECT e FROM EnvioMaletas e " +
+           "JOIN FETCH e.aerolinea " +
+           "JOIN FETCH e.aeropuertoOrigen " +
+           "JOIN FETCH e.aeropuertoDestino " +
+           "JOIN FETCH e.politicaEntrega")
+    List<EnvioMaletas> findAllWithRelations();
 
     // List<EnvioMaletas> findByEstado(EstadoMaleta estado);
 

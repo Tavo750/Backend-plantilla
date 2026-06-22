@@ -20,12 +20,13 @@ spring:
     password: ${DB_PASSWORD:password}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
-      connection-timeout: 30000      # Tiempo máximo esperando conexión del pool (30 s)
-      maximum-pool-size: 3           # VM 2GB: 3 conexiones máx para reducir overhead de memoria
-      minimum-idle: 1                # VM 2GB: solo 1 conexión permanente en reposo
+      connection-timeout: 20000      # Tiempo máximo esperando conexión del pool (20 s)
+      maximum-pool-size: 5           # Aumentado de 3→5 para tolerar picos de carga
+      minimum-idle: 2                # 2 conexiones permanentes en reposo
       idle-timeout: 300000           # Retira conexiones ociosas tras 5 min
       max-lifetime: 580000           # Vida máxima de cada conexión: 9 min 40 s
       validation-timeout: 5000       # Tiempo para validar una conexión antes de entregarla (5 s)
+      leak-detection-threshold: 20000 # Alerta si una conexión se retiene > 20 s (detecta N+1)
 
   # JPA / Hibernate
   jpa:

@@ -32,7 +32,9 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
 
     @Override
     public List<EnvioMaletas> listarEnvios() {
-        return envioMaletasRepository.findAll();
+        // JOIN FETCH: carga aerolinea, aeropuertoOrigen, aeropuertoDestino y politicaEntrega
+        // en una sola query SQL — evita N+1 que agota el pool de conexiones HikariCP
+        return envioMaletasRepository.findAllWithRelations();
     }
 
     @Override
