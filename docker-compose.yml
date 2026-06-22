@@ -14,3 +14,9 @@ services:
       - .env
     ports:
       - "3000:3000"
+    # ── Límites de memoria ────────────────────────────────────────────────────
+    # mem_limit : techo duro — si el contenedor supera 512 MB, Docker lo detiene
+    # Con UseContainerSupport activado en la JVM, el heap máximo será el 40% de
+    # 512m = ~200 MB, manteniendo el proceso Java dentro del presupuesto de RAM.
+    mem_limit: 512m
+    mem_reservation: 256m

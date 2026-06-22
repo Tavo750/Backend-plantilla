@@ -36,10 +36,20 @@ until nc -z 127.0.0.1 3306 2>/dev/null; do
 done
 
 echo "=== Puerto MySQL disponible. Iniciando Spring Boot... ==="
+# ── Límites JVM para VM con 2 GB RAM ─────────────────────────────────────────
+# -XX:+UseContainerSupport    : la JVM lee el memory limit del contenedor Docker
+# -XX:MaxRAMPercentage=40.0   : heap máximo = 40% del límite del contenedor (512m → ~200m heap)
+# -XX:InitialRAMPercentage=20 : heap inicial conservador para no reservar de golpe
+# -XX:MaxMetaspaceSize=96m    : limitar Metaspace (clases cargadas)
+# -XX:+UseSerialGC            : GC más liviano en memoria; ideal para pod pequeño y carga baja
+# -XX:+ExitOnOutOfMemoryError : detener el contenedor limpiamente si hay OOM (Docker lo reiniciará)
 exec java $JAVA_OPTS \
   -XX:+UseContainerSupport \
-  -XX:MaxRAMPercentage=75.0 \
-  -XX:+UseG1GC \
+  -XX:MaxRAMPercentage=40.0 \
+  -XX:InitialRAMPercentage=20.0 \
+  -XX:MaxMetaspaceSize=96m \
+  -XX:+UseSerialGC \
+  -XX:+ExitOnOutOfMemoryError \
   -Djava.security.egd=file:/dev/./urandom \
   -Dspring.profiles.active=prod \
   -jar /app/app.jar
