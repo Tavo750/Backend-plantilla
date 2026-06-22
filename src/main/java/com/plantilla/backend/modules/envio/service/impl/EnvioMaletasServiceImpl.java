@@ -12,6 +12,8 @@ import com.plantilla.backend.modules.maestro.repository.AeropuertoRepository;
 import com.plantilla.backend.modules.maestro.repository.PoliticaEntregaRepository;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -35,6 +37,12 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
         // JOIN FETCH: carga aerolinea, aeropuertoOrigen, aeropuertoDestino y politicaEntrega
         // en una sola query SQL — evita N+1 que agota el pool de conexiones HikariCP
         return envioMaletasRepository.findAllWithRelations();
+    }
+
+    @Override
+    public Page<EnvioMaletas> listarEnviosPaginado(Pageable pageable) {
+        // Paginado con JOIN FETCH: seguro para tablas con miles de registros
+        return envioMaletasRepository.findAllWithRelationsPaged(pageable);
     }
 
     @Override

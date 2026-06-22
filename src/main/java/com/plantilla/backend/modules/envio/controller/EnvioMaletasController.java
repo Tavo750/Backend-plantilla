@@ -6,6 +6,10 @@ import com.plantilla.backend.shared.dto.ApiResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -20,9 +24,19 @@ public class EnvioMaletasController {
     private final EnvioMaletasService envioMaletasService;
 
     @GetMapping
-    @Operation(summary = "Listar envios", description = "Obtiene la lista de todos los envios de maletas")
-    public ResponseEntity<ApiResponse<List<EnvioMaletas>>> listarEnvios() {
-        return ResponseEntity.ok(ApiResponse.success(envioMaletasService.listarEnvios()));
+    @Operation(summary = "Listar envios", description = "Obtiene la lista paginada de envios de maletas. "
+            + "Parámetros opcionales: page (default 0), size (default 50), sort (default fechaRegistro,desc)")
+    public ResponseEntity<ApiResponse<Page<EnvioMaletas>>> listarEnvios(
+            @RequestParam(defaultValue = "0")   int page,
+            @RequestParam(defaultValue = "50")  int size,
+            @RequestParam(defaultValue = "fechaRegistro,desc") String sort) {
+
+        String[] sortParts = sort.split(",");
+        Sort.Direction dir = sortParts.length > 1 && sortParts[1].equalsIgnoreCase("asc")
+                ? Sort.Direction.ASC : Sort.Direction.DESC;
+        Pageable pageable = PageRequest.of(page, Math.min(size, 200), Sort.by(dir, sortParts[0]));
+
+        return ResponseEntity.ok(ApiResponse.success(envioMaletasService.listarEnviosPaginado(pageable)));
     }
 
     @GetMapping("/{id}")

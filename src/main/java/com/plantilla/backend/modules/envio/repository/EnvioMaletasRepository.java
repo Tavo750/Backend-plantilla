@@ -1,6 +1,7 @@
 package com.plantilla.backend.modules.envio.repository;
 
 import com.plantilla.backend.modules.envio.entity.EnvioMaletas;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -26,6 +27,18 @@ public interface EnvioMaletasRepository extends JpaRepository<EnvioMaletas, Inte
            "JOIN FETCH e.aeropuertoDestino " +
            "JOIN FETCH e.politicaEntrega")
     List<EnvioMaletas> findAllWithRelations();
+
+    /**
+     * Paginado con JOIN FETCH — evita cargar toda la tabla en memoria.
+     * La countQuery es necesaria porque JPQL no soporta COUNT con JOIN FETCH.
+     */
+    @Query(value = "SELECT e FROM EnvioMaletas e " +
+                   "JOIN FETCH e.aerolinea " +
+                   "JOIN FETCH e.aeropuertoOrigen " +
+                   "JOIN FETCH e.aeropuertoDestino " +
+                   "JOIN FETCH e.politicaEntrega",
+           countQuery = "SELECT COUNT(e) FROM EnvioMaletas e")
+    Page<EnvioMaletas> findAllWithRelationsPaged(Pageable pageable);
 
     // List<EnvioMaletas> findByEstado(EstadoMaleta estado);
 
