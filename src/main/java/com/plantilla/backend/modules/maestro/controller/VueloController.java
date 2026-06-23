@@ -84,16 +84,30 @@ public class VueloController {
             vuelo.setAeropuertoDestino(aeropuertoRepository.findById(dto.getIdAeropuertoDestino())
                     .orElseThrow(() -> new BusinessException("Aeropuerto destino no encontrado")));
         }
-        if (dto.getHoraSalida() != null) vuelo.setHoraSalida(dto.getHoraSalida());
-        if (dto.getHoraLlegada() != null) vuelo.setHoraLlegada(dto.getHoraLlegada());
-        if (dto.getDuracionHoras() != null) vuelo.setDuracionHoras(dto.getDuracionHoras());
-        if (dto.getCapacidadMaxima() != null) vuelo.setCapacidadMaxima(dto.getCapacidadMaxima());
-        if (dto.getEstado() != null) vuelo.setEstado(dto.getEstado());
-        if (dto.getEsIntercontinental() != null) vuelo.setEsIntercontinental(dto.getEsIntercontinental());
+        if (dto.getHoraSalida() != null)
+            vuelo.setHoraSalida(dto.getHoraSalida());
+        if (dto.getHoraLlegada() != null)
+            vuelo.setHoraLlegada(dto.getHoraLlegada());
+        if (dto.getDuracionHoras() != null)
+            vuelo.setDuracionHoras(dto.getDuracionHoras());
+        if (dto.getCapacidadMaxima() != null)
+            vuelo.setCapacidadMaxima(dto.getCapacidadMaxima());
+        if (dto.getEstado() != null)
+            vuelo.setEstado(dto.getEstado());
+        if (dto.getEsIntercontinental() != null)
+            vuelo.setEsIntercontinental(dto.getEsIntercontinental());
 
         return ResponseEntity.ok(ApiResponse.success(vueloRepository.save(vuelo)));
     }
+    
+    @GetMapping("/origen/{idAeropuerto}")
+    public ResponseEntity<ApiResponse<List<Vuelo>>> listarPorOrigen(
+            @PathVariable Integer idAeropuerto) {
+        List<Vuelo> vuelos = vueloRepository.findByAeropuertoOrigen_IdAeropuerto(idAeropuerto);
 
+        return ResponseEntity.ok(
+                ApiResponse.success("Vuelos por aeropuerto origen recuperados correctamente", vuelos));
+    }
     @DeleteMapping("/{id}")
     @Operation(summary = "Eliminar vuelo")
     public ResponseEntity<ApiResponse<Void>> eliminarVuelo(@PathVariable Integer id) {
@@ -107,11 +121,9 @@ public class VueloController {
     // ── Cancelar / Reactivar ─────────────────────────────────────
 
     @PatchMapping("/{codigoVuelo}/cancelar")
-    @Operation(
-            summary = "Cancelar un vuelo",
-            description = "Marca el vuelo como CANCELADO. Al re-ejecutar la simulación, " +
-                    "el ALNS excluirá este vuelo y re-rutará los envíos afectados automáticamente."
-    )
+    @Operation(summary = "Cancelar un vuelo", description = "Marca el vuelo como CANCELADO. Al re-ejecutar la simulación, "
+            +
+            "el ALNS excluirá este vuelo y re-rutará los envíos afectados automáticamente.")
     public ResponseEntity<ApiResponse<Map<String, Object>>> cancelarVuelo(
             @PathVariable String codigoVuelo) {
 
@@ -151,4 +163,6 @@ public class VueloController {
 
         return ResponseEntity.ok(ApiResponse.success("Vuelo reactivado correctamente", resultado));
     }
+
+    
 }
