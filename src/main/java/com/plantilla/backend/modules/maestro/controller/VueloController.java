@@ -35,6 +35,12 @@ public class VueloController {
         return ResponseEntity.ok(ApiResponse.success(vueloRepository.findAll()));
     }
 
+    @GetMapping("/origen/{idAeropuerto}")
+    @Operation(summary = "Listar vuelos por aeropuerto origen")
+    public ResponseEntity<ApiResponse<List<Vuelo>>> listarPorOrigen(@PathVariable Integer idAeropuerto) {
+        return ResponseEntity.ok(ApiResponse.success(vueloRepository.findByAeropuertoOrigenIdAeropuerto(idAeropuerto)));
+    }
+
     @GetMapping("/{id}")
     @Operation(summary = "Obtener vuelo por ID")
     public ResponseEntity<ApiResponse<Vuelo>> obtenerVuelo(@PathVariable Integer id) {
@@ -99,15 +105,7 @@ public class VueloController {
 
         return ResponseEntity.ok(ApiResponse.success(vueloRepository.save(vuelo)));
     }
-    
-    @GetMapping("/origen/{idAeropuerto}")
-    public ResponseEntity<ApiResponse<List<Vuelo>>> listarPorOrigen(
-            @PathVariable Integer idAeropuerto) {
-        List<Vuelo> vuelos = vueloRepository.findByAeropuertoOrigen_IdAeropuerto(idAeropuerto);
 
-        return ResponseEntity.ok(
-                ApiResponse.success("Vuelos por aeropuerto origen recuperados correctamente", vuelos));
-    }
     @DeleteMapping("/{id}")
     @Operation(summary = "Eliminar vuelo")
     public ResponseEntity<ApiResponse<Void>> eliminarVuelo(@PathVariable Integer id) {

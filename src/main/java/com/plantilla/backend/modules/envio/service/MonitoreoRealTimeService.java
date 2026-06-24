@@ -147,40 +147,87 @@ public class MonitoreoRealTimeService {
         List<PlanVueloDiario> todos = planVueloRepo.findAll();
         LocalDate hoy = LocalDate.now(LIMA);
 
-        // Maletas asignadas por vuelo — consulta agregada, sin lazy loading
+        // Maletas activas por vuelo (EN_ESPERA + EN_TRANSITO): coincide con el detalle
         Map<Integer, Integer> maletasPorVuelo = new java.util.HashMap<>();
-        for (Object[] row : envioDiarioRepo.sumCantidadPorPlanVuelo()) {
+        for (Object[] row : envioDiarioRepo.sumCantidadActivaPorPlanVuelo()) {
             Integer idVuelo = (Integer) row[0];
             Integer suma    = ((Number) row[1]).intValue();
             maletasPorVuelo.put(idVuelo, suma);
         }
 
-        // Maletas activas por aeropuerto origen — consulta agregada
+        // Maletas en espera por aeropuerto origen (REGISTRADA + EN_ESPERA, no EN_TRANSITO)
         Map<String, Integer> maletasPorAeropuerto = new java.util.HashMap<>();
-        for (Object[] row : envioDiarioRepo.sumCantidadPorAeropuertoOrigen()) {
+        for (Object[] row : envioDiarioRepo.sumCantidadEnEsperaPorAeropuertoOrigen()) {
             String oaci  = (String) row[0];
             Integer suma = ((Number) row[1]).intValue();
             maletasPorAeropuerto.put(oaci, suma);
+        }
+
+        // Maletas llegadas al destino en los últimos 15 minutos
+        LocalDateTime quinceMinsAtras = LocalDateTime.now(LIMA).minusMinutes(15);
+        Map<String, Integer> maletasLlegadasPorAeropuerto = new java.util.HashMap<>();
+        for (Object[] row : envioDiarioRepo.sumCantidadPorAeropuertoDestinoReciente(quinceMinsAtras)) {
+            String oaci  = (String) row[0];
+            Integer suma = ((Number) row[1]).intValue();
+            maletasLlegadasPorAeropuerto.put(oaci, suma);
+        }
+
+        // Mapa id → codigoVuelo para armar enviosDetalle
+        Map<Integer, String> codigoVueloPorId = new java.util.HashMap<>();
+        todos.forEach(v -> {
+            String cv = v.getCodigoOrigen() + "-" + v.getCodigoDestino() + "-"
+                    + v.getHoraSalida().toString().replace(":", "").substring(0, 4);
+            codigoVueloPorId.put(v.getId(), cv);
+        });
+
+        // Todos los envíos con vuelo asignado (incluye entregados para que "Ver envíos" funcione)
+        List<Map<String, Object>> enviosDetalle = new ArrayList<>();
+        for (Object[] row : envioDiarioRepo.findTodosEnviosConVuelo()) {
+            Integer idEnvio     = (Integer) row[0];
+            String  origen      = (String)  row[1];
+            String  destino     = (String)  row[2];
+            Integer cantidad    = ((Number) row[3]).intValue();
+            Integer prioridad   = row[4] != null ? ((Number) row[4]).intValue() : 3;
+            Integer idPlanVuelo = (Integer) row[5];
+            String  estado      = row[6] != null ? (String) row[6] : "REGISTRADA";
+            String  cv          = codigoVueloPorId.get(idPlanVuelo);
+            if (cv == null) continue;
+            Map<String, Object> e = new LinkedHashMap<>();
+            e.put("id",       String.valueOf(idEnvio));
+            e.put("origen",   origen);
+            e.put("destino",  destino);
+            e.put("cantidad", cantidad);
+            e.put("prioridad",prioridad);
+            e.put("estado",   estado);
+            e.put("vuelos",   List.of(cv));
+            enviosDetalle.add(e);
         }
 
         List<Map<String, Object>> vuelos = todos.stream()
                 .map(v -> enrichVuelo(v, hoy, maletasPorVuelo))
                 .collect(Collectors.toList());
 
-        List<Map<String, Object>> almacenes = construirAlmacenes(maletasPorAeropuerto);
+        List<Map<String, Object>> almacenes = construirAlmacenes(maletasPorAeropuerto, maletasLlegadasPorAeropuerto);
+
+        // Indicadores reales de almacenes (promedio de ocupación)
+        double pctAlmMedia = almacenes.stream()
+                .filter(m -> ((Number) m.get("capacidad")).intValue() > 0)
+                .mapToDouble(m -> ((Number) m.get("pct")).doubleValue())
+                .average().orElse(0.0);
+        String semAlm = pctAlmMedia >= 90 ? "ROJO" : pctAlmMedia >= 60 ? "AMARILLO" : pctAlmMedia > 0 ? "VERDE" : "VACIO";
 
         Map<String, Object> indicadores = new LinkedHashMap<>();
         long enVuelo  = vuelos.stream().filter(v -> "EN_VUELO".equals(v.get("estadoVuelo"))).count();
         long porSalir = vuelos.stream().filter(v -> "POR_SALIR".equals(v.get("estadoVuelo"))).count();
         long llego    = vuelos.stream().filter(v -> "LLEGÓ".equals(v.get("estadoVuelo"))).count();
-        indicadores.put("totalVuelos",  vuelos.size());
-        indicadores.put("enVuelo",      enVuelo);
-        indicadores.put("porSalir",     porSalir);
-        indicadores.put("llego",        llego);
-        indicadores.put("pctFlota",     vuelos.isEmpty() ? 0.0 : (double) enVuelo / vuelos.size() * 100);
-        indicadores.put("semaforoFlota","VERDE");
-        indicadores.put("pctAlmacenes", 0.0);
-        indicadores.put("semaforoAlmacenes", "VACIO");
+        indicadores.put("totalVuelos",       vuelos.size());
+        indicadores.put("enVuelo",           enVuelo);
+        indicadores.put("porSalir",          porSalir);
+        indicadores.put("llego",             llego);
+        indicadores.put("pctFlota",          vuelos.isEmpty() ? 0.0 : (double) enVuelo / vuelos.size() * 100);
+        indicadores.put("semaforoFlota",     "VERDE");
+        indicadores.put("pctAlmacenes",      pctAlmMedia);
+        indicadores.put("semaforoAlmacenes", semAlm);
 
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("tipo",                tipo);
@@ -195,7 +242,7 @@ public class MonitoreoRealTimeService {
         snapshot.put("maletasFisicas",      maletasFisicas);
         snapshot.put("vuelos",              vuelos);
         snapshot.put("almacenesDetalle",    almacenes);
-        snapshot.put("enviosDetalle",       List.of());
+        snapshot.put("enviosDetalle",       enviosDetalle);
         snapshot.put("indicadoresGlobales", indicadores);
         return snapshot;
     }
@@ -244,21 +291,26 @@ public class MonitoreoRealTimeService {
         return m;
     }
 
-    private List<Map<String, Object>> construirAlmacenes(Map<String, Integer> maletasPorAeropuerto) {
+    private List<Map<String, Object>> construirAlmacenes(
+            Map<String, Integer> maletasPorAeropuerto,
+            Map<String, Integer> maletasLlegadasPorAeropuerto) {
         return aeropuertosPorOaci.values().stream().map(a -> {
-            int ocupacion = maletasPorAeropuerto.getOrDefault(a.getCodigoOaci(), 0);
-            int capacidad = a.getCapacidad() != null ? a.getCapacidad() : 0;
-            double pct    = capacidad > 0 ? (double) ocupacion / capacidad * 100.0 : 0.0;
-            String semaforo = pct >= 90 ? "ROJO" : pct >= 60 ? "AMARILLO" : pct > 0 ? "VERDE" : "VACIO";
+            int enEspera        = maletasPorAeropuerto.getOrDefault(a.getCodigoOaci(), 0);
+            int maletasLlegadas = maletasLlegadasPorAeropuerto.getOrDefault(a.getCodigoOaci(), 0);
+            int ocupacion       = enEspera + maletasLlegadas;
+            int capacidad       = a.getCapacidad() != null ? a.getCapacidad() : 0;
+            double pct          = capacidad > 0 ? (double) ocupacion / capacidad * 100.0 : 0.0;
+            String semaforo     = pct >= 90 ? "ROJO" : pct >= 60 ? "AMARILLO" : pct > 0 ? "VERDE" : "VACIO";
 
             Map<String, Object> m = new LinkedHashMap<>();
-            m.put("codigo",     a.getCodigoOaci());
-            m.put("ciudad",     a.getCiudad());
-            m.put("continente", a.getContinente().name());
-            m.put("capacidad",  capacidad);
-            m.put("ocupacion",  ocupacion);
-            m.put("pct",        pct);
-            m.put("semaforo",   semaforo);
+            m.put("codigo",          a.getCodigoOaci());
+            m.put("ciudad",          a.getCiudad());
+            m.put("continente",      a.getContinente().name());
+            m.put("capacidad",       capacidad);
+            m.put("ocupacion",       ocupacion);
+            m.put("pct",             pct);
+            m.put("semaforo",        semaforo);
+            m.put("maletasLlegadas", maletasLlegadas);
             return m;
         }).collect(Collectors.toList());
     }
