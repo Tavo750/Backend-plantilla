@@ -66,4 +66,10 @@ public class EnvioDiario {
     /** ID del vuelo de plan_vuelo_diario asignado por el planificador (nullable). */
     @Column(name = "id_plan_vuelo_asignado")
     private Integer idPlanVueloAsignado;
+
+    @Column(name = "fecha_hora_salida_asignada")
+    private LocalDateTime fechaHoraSalidaAsignada;
+
+    @Column(name = "fecha_hora_llegada_asignada")
+    private LocalDateTime fechaHoraLlegadaAsignada;
 }

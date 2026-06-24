@@ -4,6 +4,8 @@ import com.plantilla.backend.modules.envio.entity.EnvioDiario;
 import com.plantilla.backend.modules.envio.repository.EnvioDiarioRepository;
 import com.plantilla.backend.modules.maestro.entity.PlanVueloDiario;
 import com.plantilla.backend.modules.maestro.repository.PlanVueloDiarioRepository;
+import com.plantilla.backend.shared.enums.EstadoMaleta;
+
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,11 +13,15 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-
+import java.util.Comparator;
 /**
  * Planificador que cada 5 minutos reales asigna los pedidos pendientes de envio_diario
  * a los próximos vuelos disponibles en plan_vuelo_diario.
@@ -45,7 +51,7 @@ public class PlanificadorEnvioService {
             return;
         }
 
-        LocalTime ahora = LocalTime.now();
+        LocalDateTime ahora = LocalDateTime.now();
 
         // Capacidad ocupada por vuelo (id_plan_vuelo_asignado → total maletas ya asignadas)
         Map<Integer, Integer> capacidadUsada = new ConcurrentHashMap<>();
@@ -68,28 +74,32 @@ public class PlanificadorEnvioService {
             String codigoDestino = envio.getAeropuertoDestino().getCodigoOaci();
 
             // Buscar próximo vuelo disponible en la ruta que salga después de ahora
-            List<PlanVueloDiario> candidatos = planVueloRepo.findProximoVuelo(codigoOrigen, codigoDestino, ahora);
+            List<CandidatoVuelo> candidatos = obtenerCandidatosVuelo(codigoOrigen, codigoDestino, ahora);
 
-            PlanVueloDiario vuelo = null;
-            for (PlanVueloDiario c : candidatos) {
-                int usada = capacidadUsada.getOrDefault(c.getId(), 0);
-                if (usada + envio.getCantidad() <= c.getCapacidad()) {
-                    vuelo = c;
+            CandidatoVuelo candidato = null;
+
+            for (CandidatoVuelo c : candidatos) {
+                int usada = capacidadUsada.getOrDefault(c.vuelo().getId(), 0);
+
+                if (usada + envio.getCantidad() <= c.vuelo().getCapacidad()) {
+                    candidato = c;
                     break;
                 }
             }
 
-            if (vuelo == null) {
+            if (candidato == null) {
                 noAsignados++;
                 log.debug("Sin vuelo disponible para envío {} ({} → {})", envio.getIdEnvio(), codigoOrigen, codigoDestino);
                 continue;
             }
 
-            envio.setIdPlanVueloAsignado(vuelo.getId());
-            envio.setEstado(com.plantilla.backend.shared.enums.EstadoMaleta.EN_TRANSITO);
+            envio.setIdPlanVueloAsignado(candidato.vuelo().getId());
+            envio.setFechaHoraSalidaAsignada(candidato.fechaHoraSalida());
+            envio.setFechaHoraLlegadaAsignada(candidato.fechaHoraLlegada());
+            envio.setEstado(EstadoMaleta.EN_ESPERA);
             envioDiarioRepo.save(envio);
 
-            capacidadUsada.merge(vuelo.getId(), envio.getCantidad(), Integer::sum);
+            capacidadUsada.merge(candidato.vuelo().getId(), envio.getCantidad(), Integer::sum);
             asignados++;
             maletas += envio.getCantidad();
         }
@@ -106,4 +116,101 @@ public class PlanificadorEnvioService {
         );
         monitoreoRealTimeService.broadcastPlan();
     }
+
+    @Scheduled(fixedDelay = 60_000, initialDelay = 30_000)
+    @Transactional
+    public void actualizarEstadosPorLlegadaDeVuelo() {
+        LocalDateTime ahora = LocalDateTime.now();
+
+        List<EnvioDiario> enviosConVuelo = new ArrayList<>();
+        enviosConVuelo.addAll(envioDiarioRepo.findByEstado("EN_ESPERA"));
+        enviosConVuelo.addAll(envioDiarioRepo.findByEstado("EN_TRANSITO"));
+
+        for (EnvioDiario envio : enviosConVuelo) {
+            if (envio.getIdPlanVueloAsignado() == null) {
+                continue;
+            }
+
+            PlanVueloDiario vuelo = planVueloRepo.findById(envio.getIdPlanVueloAsignado())
+                    .orElse(null);
+
+            if (vuelo == null) {
+                continue;
+            }
+
+            LocalDateTime fechaHoraSalida = envio.getFechaHoraSalidaAsignada();
+            LocalDateTime fechaHoraLlegada = envio.getFechaHoraLlegadaAsignada();
+
+            if (fechaHoraSalida == null || fechaHoraLlegada == null) {
+                fechaHoraSalida = calcularFechaHoraSalida(envio.getFechaRegistro(), vuelo.getHoraSalida());
+                fechaHoraLlegada = calcularFechaHoraLlegada(fechaHoraSalida.toLocalDate(), vuelo);
+
+                envio.setFechaHoraSalidaAsignada(fechaHoraSalida);
+                envio.setFechaHoraLlegadaAsignada(fechaHoraLlegada);
+            }
+
+            if (ahora.isBefore(fechaHoraSalida)) {
+                envio.setEstado(EstadoMaleta.EN_ESPERA);
+                envioDiarioRepo.save(envio);
+                continue;
+            }
+
+            if (ahora.isBefore(fechaHoraLlegada)) {
+                envio.setEstado(EstadoMaleta.EN_TRANSITO);
+                envioDiarioRepo.save(envio);
+                continue;
+            }
+
+            if (fechaHoraLlegada.isAfter(envio.getFechaLimiteEntrega())) {
+                envio.setEstado(EstadoMaleta.RETRASADA);
+            } else {
+                envio.setEstado(EstadoMaleta.ENTREGADA);
+            }
+
+            envioDiarioRepo.save(envio);
+        }
+    }
+
+    private List<CandidatoVuelo> obtenerCandidatosVuelo(
+            String codigoOrigen,
+            String codigoDestino,
+            LocalDateTime ahora
+    ) {
+        return planVueloRepo
+                .findByCodigoOrigenAndCodigoDestinoOrderByHoraSalidaAsc(codigoOrigen, codigoDestino)
+                .stream()
+                .map(vuelo -> {
+                    LocalDateTime salida = calcularFechaHoraSalida(ahora, vuelo.getHoraSalida());
+                    LocalDateTime llegada = calcularFechaHoraLlegada(salida.toLocalDate(), vuelo);
+                    return new CandidatoVuelo(vuelo, salida, llegada);
+                })
+                .sorted(Comparator.comparing(CandidatoVuelo::fechaHoraSalida))
+                .toList();
+    }
+
+    private LocalDateTime calcularFechaHoraSalida(LocalDateTime referencia, LocalTime horaSalida) {
+        LocalDate fechaSalida = referencia.toLocalDate();
+
+        if (!horaSalida.isAfter(referencia.toLocalTime())) {
+            fechaSalida = fechaSalida.plusDays(1);
+        }
+
+        return LocalDateTime.of(fechaSalida, horaSalida);
+    }
+
+    private LocalDateTime calcularFechaHoraLlegada(LocalDate fechaSalida, PlanVueloDiario vuelo) {
+        LocalDateTime llegada = LocalDateTime.of(fechaSalida, vuelo.getHoraLlegada());
+
+        if (vuelo.getHoraLlegada().isBefore(vuelo.getHoraSalida())) {
+            llegada = llegada.plusDays(1);
+        }
+
+        return llegada;
+    }
+
+    private record CandidatoVuelo(
+            PlanVueloDiario vuelo,
+            LocalDateTime fechaHoraSalida,
+            LocalDateTime fechaHoraLlegada
+    ) {}
 }
