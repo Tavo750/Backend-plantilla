@@ -28,5 +28,11 @@ public interface PlanVueloDiarioRepository extends JpaRepository<PlanVueloDiario
             @Param("destino") String destino,
             @Param("ahora") LocalTime ahora);
 
+    /**Esto nos deja traer todos los vuelos de esa ruta ordenados por hora. */
+    List<PlanVueloDiario> findByCodigoOrigenAndCodigoDestinoOrderByHoraSalidaAsc(
+            String codigoOrigen,
+            String codigoDestino
+    );
+
     boolean existsByCodigoOrigenAndCodigoDestinoAndHoraSalida(String codigoOrigen, String codigoDestino, LocalTime horaSalida);
 }
