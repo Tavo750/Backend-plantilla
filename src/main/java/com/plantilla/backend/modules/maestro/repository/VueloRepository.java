@@ -2,7 +2,6 @@ package com.plantilla.backend.modules.maestro.repository;
 
 import com.plantilla.backend.modules.maestro.entity.Vuelo;
 import com.plantilla.backend.shared.enums.EstadoVuelo;
-
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
@@ -44,4 +43,8 @@ public interface VueloRepository extends JpaRepository<Vuelo, Integer> {
 
     @EntityGraph(attributePaths = {"aeropuertoOrigen", "aeropuertoDestino"})
     List<Vuelo> findByAeropuertoOrigen_IdAeropuerto(Integer idAeropuertoOrigen);
+
+    /** Vuelos que están en vuelo en el momento indicado (simulación: snapshot inicial). */
+    List<Vuelo> findByHoraSalidaLessThanEqualAndHoraLlegadaGreaterThanAndEstadoNot(
+            LocalDateTime horaSalida, LocalDateTime horaLlegada, EstadoVuelo estado);
 }
