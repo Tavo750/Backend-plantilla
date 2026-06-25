@@ -33,6 +33,7 @@ public class AuthServiceImpl implements AuthService {
     private final PasswordEncoder passwordEncoder;
 
     @Override
+    @Transactional(readOnly = true)
     public LoginResponse login(LoginRequest request) {
         log.info("Intento de login para: {}", request.getCorreo());
 
