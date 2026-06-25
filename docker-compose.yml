@@ -15,8 +15,9 @@ services:
     ports:
       - "3000:3000"
     # ── Límites de memoria ──────────────────────────────────────────────────────────────────────────────
-    # mem_limit: techo duro — subido de 512m a 768m.
-    # Con UseContainerSupport, el heap máximo será el 40% de 768m = ~307 MB.
-    # Metaspace (96m) + heap (307m) + JVM overhead (~80m) + SSH (~30m) ≈ 513m < 768m.
+    # mem_limit: techo duro — 768m.
+    # MaxRAMPercentage=35% → heap máximo ≈ 269 MB.
+    # Metaspace (160m) + heap (269m) + JVM overhead (~80m) + SSH (~30m) ≈ 539m < 768m.
+    # Se bajó heap de 40% → 35% para ceder espacio a Metaspace (27 repos JPA + Hibernate 6).
     mem_limit: 768m
     mem_reservation: 384m

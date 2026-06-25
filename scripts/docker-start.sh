@@ -46,12 +46,13 @@ echo "=== Puerto MySQL disponible. Iniciando Spring Boot... ==="
 # -XX:+ExitOnOutOfMemoryError : detener el contenedor limpiamente si hay OOM
 exec java $JAVA_OPTS \
   -XX:+UseContainerSupport \
-  -XX:MaxRAMPercentage=40.0 \
+  -XX:MaxRAMPercentage=35.0 \
   -XX:InitialRAMPercentage=15.0 \
-  -XX:MaxMetaspaceSize=96m \
+  -XX:MaxMetaspaceSize=160m \
   -XX:+UseG1GC \
   -XX:MaxGCPauseMillis=200 \
   -XX:+ExitOnOutOfMemoryError \
   -Djava.security.egd=file:/dev/./urandom \
   -Dspring.profiles.active=prod \
+  -Dspring.jpa.open-in-view=false \
   -jar /app/app.jar
