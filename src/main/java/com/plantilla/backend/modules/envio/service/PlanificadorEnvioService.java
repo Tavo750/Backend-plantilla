@@ -122,49 +122,53 @@ public class PlanificadorEnvioService {
     public void actualizarEstadosPorLlegadaDeVuelo() {
         LocalDateTime ahora = LocalDateTime.now();
 
+        // Incluir RETRASADA para que puedan transicionar a ENTREGADA cuando el vuelo aterrice
         List<EnvioDiario> enviosConVuelo = new ArrayList<>();
         enviosConVuelo.addAll(envioDiarioRepo.findByEstado("EN_ESPERA"));
         enviosConVuelo.addAll(envioDiarioRepo.findByEstado("EN_TRANSITO"));
+        enviosConVuelo.addAll(envioDiarioRepo.findByEstado("RETRASADA"));
+
+        // Verificar también paquetes sin vuelo que superaron su fecha límite
+        List<EnvioDiario> sinVuelo = envioDiarioRepo.findByEstado("REGISTRADA");
+        for (EnvioDiario envio : sinVuelo) {
+            if (envio.getIdPlanVueloAsignado() == null && !ahora.isBefore(envio.getFechaLimiteEntrega())) {
+                envio.setEstado(EstadoMaleta.RETRASADA);
+                envioDiarioRepo.save(envio);
+            }
+        }
 
         for (EnvioDiario envio : enviosConVuelo) {
-            if (envio.getIdPlanVueloAsignado() == null) {
-                continue;
-            }
+            if (envio.getIdPlanVueloAsignado() == null) continue;
 
-            PlanVueloDiario vuelo = planVueloRepo.findById(envio.getIdPlanVueloAsignado())
-                    .orElse(null);
+            PlanVueloDiario vuelo = planVueloRepo.findById(envio.getIdPlanVueloAsignado()).orElse(null);
+            if (vuelo == null) continue;
 
-            if (vuelo == null) {
-                continue;
-            }
-
-            LocalDateTime fechaHoraSalida = envio.getFechaHoraSalidaAsignada();
+            LocalDateTime fechaHoraSalida  = envio.getFechaHoraSalidaAsignada();
             LocalDateTime fechaHoraLlegada = envio.getFechaHoraLlegadaAsignada();
 
             if (fechaHoraSalida == null || fechaHoraLlegada == null) {
-                fechaHoraSalida = calcularFechaHoraSalida(envio.getFechaRegistro(), vuelo.getHoraSalida());
+                fechaHoraSalida  = calcularFechaHoraSalida(envio.getFechaRegistro(), vuelo.getHoraSalida());
                 fechaHoraLlegada = calcularFechaHoraLlegada(fechaHoraSalida.toLocalDate(), vuelo);
-
                 envio.setFechaHoraSalidaAsignada(fechaHoraSalida);
                 envio.setFechaHoraLlegadaAsignada(fechaHoraLlegada);
             }
 
-            if (ahora.isBefore(fechaHoraSalida)) {
-                envio.setEstado(EstadoMaleta.EN_ESPERA);
-                envioDiarioRepo.save(envio);
-                continue;
-            }
+            // Ventana de 15 minutos tras el aterrizaje para marcar como ENTREGADA
+            LocalDateTime entregadaDesde   = fechaHoraLlegada.plusMinutes(15);
+            boolean deadlinePasado = !ahora.isBefore(envio.getFechaLimiteEntrega());
 
-            if (ahora.isBefore(fechaHoraLlegada)) {
-                envio.setEstado(EstadoMaleta.EN_TRANSITO);
-                envioDiarioRepo.save(envio);
-                continue;
-            }
-
-            if (fechaHoraLlegada.isAfter(envio.getFechaLimiteEntrega())) {
-                envio.setEstado(EstadoMaleta.RETRASADA);
-            } else {
+            if (!ahora.isBefore(entregadaDesde)) {
+                // 15+ min después del aterrizaje → siempre ENTREGADA
                 envio.setEstado(EstadoMaleta.ENTREGADA);
+            } else if (!ahora.isBefore(fechaHoraLlegada)) {
+                // Aterrizó pero aún en ventana de descarga (0–15 min) → EN_TRANSITO
+                envio.setEstado(EstadoMaleta.EN_TRANSITO);
+            } else if (!ahora.isBefore(fechaHoraSalida)) {
+                // En vuelo: RETRASADA si el plazo ya pasó, sino EN_TRANSITO
+                envio.setEstado(deadlinePasado ? EstadoMaleta.RETRASADA : EstadoMaleta.EN_TRANSITO);
+            } else {
+                // Esperando salida: RETRASADA si el plazo ya pasó, sino EN_ESPERA
+                envio.setEstado(deadlinePasado ? EstadoMaleta.RETRASADA : EstadoMaleta.EN_ESPERA);
             }
 
             envioDiarioRepo.save(envio);
