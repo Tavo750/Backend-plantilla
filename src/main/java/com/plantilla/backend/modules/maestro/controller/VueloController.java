@@ -10,6 +10,7 @@ import com.plantilla.backend.shared.enums.EstadoVuelo;
 import com.plantilla.backend.shared.errors.BusinessException;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -30,18 +31,21 @@ public class VueloController {
     // ── CRUD ─────────────────────────────────────────────────────
 
     @GetMapping
+    @Transactional(Transactional.TxType.REQUIRED)
     @Operation(summary = "Listar vuelos", description = "Obtiene la lista de todos los vuelos")
     public ResponseEntity<ApiResponse<List<Vuelo>>> listarVuelos() {
         return ResponseEntity.ok(ApiResponse.success(vueloRepository.findAll()));
     }
 
     @GetMapping("/origen/{idAeropuerto}")
+    @Transactional(Transactional.TxType.REQUIRED)
     @Operation(summary = "Listar vuelos por aeropuerto origen")
     public ResponseEntity<ApiResponse<List<Vuelo>>> listarPorOrigen(@PathVariable Integer idAeropuerto) {
         return ResponseEntity.ok(ApiResponse.success(vueloRepository.findByAeropuertoOrigenIdAeropuerto(idAeropuerto)));
     }
 
     @GetMapping("/{id}")
+    @Transactional(Transactional.TxType.REQUIRED)
     @Operation(summary = "Obtener vuelo por ID")
     public ResponseEntity<ApiResponse<Vuelo>> obtenerVuelo(@PathVariable Integer id) {
         Vuelo vuelo = vueloRepository.findById(id)

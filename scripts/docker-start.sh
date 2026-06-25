@@ -54,5 +54,4 @@ exec java $JAVA_OPTS \
   -XX:+ExitOnOutOfMemoryError \
   -Djava.security.egd=file:/dev/./urandom \
   -Dspring.profiles.active=prod \
-  -Dspring.jpa.open-in-view=false \
   -jar /app/app.jar

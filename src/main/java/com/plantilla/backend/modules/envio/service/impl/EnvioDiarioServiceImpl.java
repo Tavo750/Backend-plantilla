@@ -12,6 +12,7 @@ import com.plantilla.backend.modules.maestro.repository.PoliticaEntregaRepositor
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -28,6 +29,7 @@ public class EnvioDiarioServiceImpl implements EnvioDiarioService {
     private final MonitoreoRealTimeService monitoreoRealTimeService;
 
     @Override
+    @Transactional(readOnly = true)
     public List<EnvioDiario> listarEnvios() {
         return envioDiarioRepository.findAll();
     }
