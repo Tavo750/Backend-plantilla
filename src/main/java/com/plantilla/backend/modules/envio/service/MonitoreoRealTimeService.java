@@ -106,9 +106,13 @@ public class MonitoreoRealTimeService {
         this.maletasFisicas     = maletas;
     }
 
-    /** Fuerza un broadcast PLAN completo (llamado por el planificador). */
+    /**
+     * Fuerza un broadcast PLAN completo.
+     * Se despacha al scheduler interno para NO bloquear el hilo HTTP que llama
+     * desde crearEnvio() y evitar contención con el tick (cada 1 s).
+     */
     public void broadcastPlan() {
-        broadcastSnapshot();
+        scheduler.execute(this::broadcastSnapshot);
     }
 
     // ════════════════════════════════════════════════════════════════════

@@ -85,8 +85,16 @@ public class MonitoreoWebSocketHandler extends TextWebSocketHandler {
             TextMessage msg = new TextMessage(json);
             sessions.removeIf(s -> !s.isOpen());
             for (WebSocketSession s : sessions) {
-                try { s.sendMessage(msg); }
-                catch (Exception e) { log.warn("Error enviando a sesión {}: {}", s.getId(), e.getMessage()); }
+                // WebSocketSession.sendMessage NO es thread-safe: sincronizar por sesión
+                // para evitar TEXT_PARTIAL_WRITING cuando tick (1 s) y broadcastPlan
+                // (hilo HTTP) escriben de forma concurrente.
+                synchronized (s) {
+                    try {
+                        if (s.isOpen()) s.sendMessage(msg);
+                    } catch (Exception e) {
+                        log.warn("Error enviando a sesión {}: {}", s.getId(), e.getMessage());
+                    }
+                }
             }
         } catch (Exception e) {
             log.error("Error serializando broadcast: {}", e.getMessage());

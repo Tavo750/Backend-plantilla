@@ -20,6 +20,8 @@ import java.util.ArrayList;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Comparator;
 /**
@@ -137,10 +139,19 @@ public class PlanificadorEnvioService {
             }
         }
 
+        // Precargar todos los PlanVuelo necesarios en una sola query — evita N+1
+        Set<Integer> idVuelos = enviosConVuelo.stream()
+                .map(EnvioDiario::getIdPlanVueloAsignado)
+                .filter(Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+        Map<Integer, PlanVueloDiario> vuelosPorId = planVueloRepo.findAllById(idVuelos)
+                .stream()
+                .collect(java.util.stream.Collectors.toMap(PlanVueloDiario::getId, v -> v));
+
         for (EnvioDiario envio : enviosConVuelo) {
             if (envio.getIdPlanVueloAsignado() == null) continue;
 
-            PlanVueloDiario vuelo = planVueloRepo.findById(envio.getIdPlanVueloAsignado()).orElse(null);
+            PlanVueloDiario vuelo = vuelosPorId.get(envio.getIdPlanVueloAsignado());
             if (vuelo == null) continue;
 
             LocalDateTime fechaHoraSalida  = envio.getFechaHoraSalidaAsignada();
