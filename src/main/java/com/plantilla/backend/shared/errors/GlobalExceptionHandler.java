@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.util.List;
 import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
-
+import org.springframework.web.server.ResponseStatusException;
 /**
  * Manejador global de excepciones.
  * Principio SOLID (S): Solo responsable de traducir excepciones a respuestas HTTP consistentes.
@@ -22,6 +22,22 @@ import org.springframework.web.context.request.async.AsyncRequestTimeoutExceptio
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+
+    /**
+     * Maneja excepciones con estado HTTP explícito, como ResponseStatusException.
+     */
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<ApiResponse<Object>> handleResponseStatusException(ResponseStatusException ex) {
+        log.warn("Error HTTP [{}]: {}", ex.getStatusCode().value(), ex.getReason());
+
+        return ResponseEntity.status(ex.getStatusCode()).body(
+                ApiResponse.error(
+                        ex.getStatusCode().value(),
+                        ex.getReason(),
+                        null
+                )
+        );
+    }
     /**
      * Maneja errores de validación (campos inválidos).
      */
