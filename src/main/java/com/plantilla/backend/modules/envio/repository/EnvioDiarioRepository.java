@@ -70,5 +70,10 @@ public interface EnvioDiarioRepository extends JpaRepository<EnvioDiario, Intege
            "AND CAST(e.estado AS string) IN ('EN_ESPERA', 'EN_TRANSITO') " +
            "GROUP BY e.idPlanVueloAsignado")
     List<Object[]> sumCantidadActivaPorPlanVuelo();
-
+    
+       /** Para validación: suma de maletas activas de un aeropuerto origen específico. */
+       @Query("SELECT COALESCE(SUM(e.cantidad), 0) FROM EnvioDiario e " +
+              "WHERE e.aeropuertoOrigen.idAeropuerto = :idAeropuerto " +
+              "AND CAST(e.estado AS string) IN ('REGISTRADA', 'EN_ESPERA', 'EN_TRANSITO', 'RETRASADA')")
+       int sumCantidadActivaPorAeropuertoOrigen(@Param("idAeropuerto") Integer idAeropuerto);
 }
