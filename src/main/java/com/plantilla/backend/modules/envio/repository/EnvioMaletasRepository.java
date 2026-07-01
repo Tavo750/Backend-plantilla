@@ -1,6 +1,7 @@
 package com.plantilla.backend.modules.envio.repository;
 
 import com.plantilla.backend.modules.envio.entity.EnvioMaletas;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -16,6 +17,13 @@ import java.util.Optional;
  */
 @Repository
 public interface EnvioMaletasRepository extends JpaRepository<EnvioMaletas, Integer> {
+
+        @Query("SELECT e FROM EnvioMaletas e JOIN FETCH e.aerolinea JOIN FETCH e.aeropuertoOrigen JOIN FETCH e.aeropuertoDestino JOIN FETCH e.politicaEntrega")
+        List<EnvioMaletas> findAllWithRelations();
+
+        @Query(value = "SELECT e FROM EnvioMaletas e JOIN FETCH e.aerolinea JOIN FETCH e.aeropuertoOrigen JOIN FETCH e.aeropuertoDestino JOIN FETCH e.politicaEntrega", 
+               countQuery = "SELECT count(e) FROM EnvioMaletas e")
+        Page<EnvioMaletas> findAllWithRelationsPaged(Pageable pageable);
 
         List<EnvioMaletas> findByAerolineaIdAerolinea(Integer idAerolinea);
 
