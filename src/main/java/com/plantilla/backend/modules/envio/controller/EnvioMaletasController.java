@@ -72,4 +72,14 @@ public class EnvioMaletasController {
         envioMaletasService.eliminarEnvio(id);
         return ResponseEntity.ok(ApiResponse.success("Envío de maletas eliminado", null));
     }
+
+    @GetMapping("/aeropuerto/{idAeropuerto}")
+    @Operation(summary = "Listar envios por aeropuerto origen")
+    public ResponseEntity<ApiResponse<List<EnvioMaletas>>> listarEnviosPorAeropuertoOrigen(
+            @PathVariable Integer idAeropuerto
+    ) {
+        return ResponseEntity.ok(
+                ApiResponse.success(envioMaletasService.listarPorAeropuertoOrigen(idAeropuerto))
+        );
+    }
 }

@@ -12,8 +12,8 @@ import com.plantilla.backend.modules.maestro.repository.AeropuertoRepository;
 import com.plantilla.backend.modules.maestro.repository.PoliticaEntregaRepository;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -34,7 +34,8 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
 
     @Override
     public List<EnvioMaletas> listarEnvios() {
-        // JOIN FETCH: carga aerolinea, aeropuertoOrigen, aeropuertoDestino y politicaEntrega
+        // JOIN FETCH: carga aerolinea, aeropuertoOrigen, aeropuertoDestino y
+        // politicaEntrega
         // en una sola query SQL — evita N+1 que agota el pool de conexiones HikariCP
         return envioMaletasRepository.findAllWithRelations();
     }
@@ -91,11 +92,12 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
                 ? dto.getHoraRegistrada()
                 : fechaRegistro.toLocalTime());
 
-        // Fecha límite: usar la indicada o calcular por SLA (1 día mismo continente, 2 diferente)
+        // Fecha límite: usar la indicada o calcular por SLA (1 día mismo continente, 2
+        // diferente)
         if (dto.getFechaLimiteEntrega() != null) {
             envio.setFechaLimiteEntrega(dto.getFechaLimiteEntrega());
         } else {
-            String contOrigen  = String.valueOf(envio.getAeropuertoOrigen().getContinente());
+            String contOrigen = String.valueOf(envio.getAeropuertoOrigen().getContinente());
             String contDestino = String.valueOf(envio.getAeropuertoDestino().getContinente());
             int diasSla = contOrigen.equals(contDestino) ? 1 : 2;
             envio.setFechaLimiteEntrega(fechaRegistro.plusDays(diasSla));
@@ -112,7 +114,8 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
     @Override
     @Transactional
     public List<EnvioMaletas> crearEnviosBatch(List<EnvioMaletasCreateDTO> dtos) {
-        if (dtos == null || dtos.isEmpty()) return List.of();
+        if (dtos == null || dtos.isEmpty())
+            return List.of();
 
         Aerolinea aerolineaDefault = aerolineaRepository.findAll().stream()
                 .findFirst()
@@ -126,7 +129,7 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
 
         List<EnvioMaletas> envios = new ArrayList<>(dtos.size());
         for (EnvioMaletasCreateDTO dto : dtos) {
-            Aeropuerto origen  = aeropuertos.get(dto.getIdAeropuertoOrigen());
+            Aeropuerto origen = aeropuertos.get(dto.getIdAeropuertoOrigen());
             Aeropuerto destino = aeropuertos.get(dto.getIdAeropuertoDestino());
             if (origen == null)
                 throw new RuntimeException("Aeropuerto origen no encontrado: " + dto.getIdAeropuertoOrigen());
@@ -141,10 +144,12 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
             envio.setPoliticaEntrega(politicaDefault);
 
             LocalDateTime fechaRegistro = dto.getFechaRegistro() != null
-                    ? dto.getFechaRegistro() : LocalDateTime.now();
+                    ? dto.getFechaRegistro()
+                    : LocalDateTime.now();
             envio.setFechaRegistro(fechaRegistro);
             envio.setHoraRegistrada(dto.getHoraRegistrada() != null
-                    ? dto.getHoraRegistrada() : fechaRegistro.toLocalTime());
+                    ? dto.getHoraRegistrada()
+                    : fechaRegistro.toLocalTime());
 
             if (dto.getFechaLimiteEntrega() != null) {
                 envio.setFechaLimiteEntrega(dto.getFechaLimiteEntrega());
@@ -178,5 +183,12 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
     @Override
     public void eliminarEnvio(Integer id) {
         envioMaletasRepository.deleteById((Integer) id);
+    }
+
+    @Override
+    public List<EnvioMaletas> listarPorAeropuertoOrigen(Integer idAeropuerto) {
+        return envioMaletasRepository.findByAeropuertoOrigenIdAeropuertoOrderByFechaRegistroDesc(
+                idAeropuerto,
+                PageRequest.of(0, 100));
     }
 }

@@ -154,4 +154,9 @@ public class EnvioDiarioServiceImpl implements EnvioDiarioService {
     public void eliminarEnvio(Integer id) {
         envioDiarioRepository.deleteById(id);
     }
+
+    @Override
+    public List<EnvioDiario> listarEnviosPorAeropuerto(Integer idAeropuerto) {
+        return envioDiarioRepository.findByAeropuertoOrigenOrDestino(idAeropuerto);
+    }
 }
