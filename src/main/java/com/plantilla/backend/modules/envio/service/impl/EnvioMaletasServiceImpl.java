@@ -14,6 +14,7 @@ import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -44,8 +45,18 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
 
     @Override
     public Page<EnvioMaletas> listarEnviosPaginado(Pageable pageable) {
-        // Paginado con JOIN FETCH: seguro para tablas con miles de registros
-        return envioMaletasRepository.findAllWithRelationsPaged(pageable);
+        // Estrategia 2-pasos para evitar paginación en memoria con JOIN FETCH:
+        // 1) Obtener solo los IDs de la página (query ligera sobre PK + fecha_registro)
+        Page<Integer> idsPage = envioMaletasRepository.findIdsPaged(pageable);
+        if (idsPage.isEmpty()) {
+            return idsPage.map(id -> null); // devuelve Page vacío con metadata correcta
+        }
+        // 2) Cargar entidades completas con JOIN FETCH solo para esos IDs
+        List<EnvioMaletas> content = envioMaletasRepository.findByIdsWithRelations(idsPage.getContent());
+        // Re-ordenar según el orden original de IDs devuelto por findIdsPaged
+        List<Integer> orderedIds = idsPage.getContent();
+        content.sort((a, b) -> orderedIds.indexOf(a.getIdEnvio()) - orderedIds.indexOf(b.getIdEnvio()));
+        return new PageImpl<>(content, pageable, idsPage.getTotalElements());
     }
 
     @Override
