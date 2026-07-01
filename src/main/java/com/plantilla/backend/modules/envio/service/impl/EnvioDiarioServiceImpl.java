@@ -91,7 +91,7 @@ public class EnvioDiarioServiceImpl implements EnvioDiarioService {
 
         LocalDateTime fechaRegistro = dto.getFechaRegistro() != null
                 ? dto.getFechaRegistro()
-                : LocalDateTime.now();
+                : LocalDateTime.now(java.time.ZoneId.of("America/Lima"));
 
         envio.setFechaRegistro(fechaRegistro);
 
