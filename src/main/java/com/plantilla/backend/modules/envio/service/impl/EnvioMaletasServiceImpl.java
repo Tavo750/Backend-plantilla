@@ -88,7 +88,7 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
         // Fecha registro: usar la indicada o la hora actual UTC
         LocalDateTime fechaRegistro = dto.getFechaRegistro() != null
                 ? dto.getFechaRegistro()
-                : LocalDateTime.now();
+                : LocalDateTime.now(java.time.ZoneId.of("America/Lima"));
         envio.setFechaRegistro(fechaRegistro);
         envio.setHoraRegistrada(dto.getHoraRegistrada() != null
                 ? dto.getHoraRegistrada()
@@ -147,7 +147,7 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
 
             LocalDateTime fechaRegistro = dto.getFechaRegistro() != null
                     ? dto.getFechaRegistro()
-                    : LocalDateTime.now();
+                    : LocalDateTime.now(java.time.ZoneId.of("America/Lima"));
             envio.setFechaRegistro(fechaRegistro);
             envio.setHoraRegistrada(dto.getHoraRegistrada() != null
                     ? dto.getHoraRegistrada()
