@@ -54,7 +54,13 @@ public interface EnvioMaletasRepository extends JpaRepository<EnvioMaletas, Inte
 
         Optional<EnvioMaletas> findTopByOrderByFechaRegistroAsc();
 
+        /**
+         * Consulta de envíos por aeropuerto origen con JOIN FETCH para evitar N+1.
+         * El LAZY loading de la query por nombre de método disparaba una query extra
+         * por cada entidad relacionada (aerolinea, origen, destino, politica).
+         */
+        @Query("SELECT e FROM EnvioMaletas e JOIN FETCH e.aerolinea JOIN FETCH e.aeropuertoOrigen JOIN FETCH e.aeropuertoDestino JOIN FETCH e.politicaEntrega WHERE e.aeropuertoOrigen.idAeropuerto = :idAeropuerto ORDER BY e.fechaRegistro DESC")
         List<EnvioMaletas> findByAeropuertoOrigenIdAeropuertoOrderByFechaRegistroDesc(
-                        Integer idAeropuertoOrigen,
+                        @org.springframework.data.repository.query.Param("idAeropuerto") Integer idAeropuerto,
                         Pageable pageable);
 }
