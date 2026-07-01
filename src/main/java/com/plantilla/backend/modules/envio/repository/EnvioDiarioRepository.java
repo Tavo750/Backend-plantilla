@@ -76,4 +76,16 @@ public interface EnvioDiarioRepository extends JpaRepository<EnvioDiario, Intege
               "WHERE e.aeropuertoOrigen.idAeropuerto = :idAeropuerto " +
               "AND CAST(e.estado AS string) IN ('REGISTRADA', 'EN_ESPERA', 'EN_TRANSITO', 'RETRASADA')")
        int sumCantidadActivaPorAeropuertoOrigen(@Param("idAeropuerto") Integer idAeropuerto);
+
+       /** Lista envíos relacionados a un aeropuerto, ya sea como origen o destino. */
+       @Query("""
+       SELECT e
+       FROM EnvioDiario e
+       WHERE e.aeropuertoOrigen.idAeropuerto = :idAeropuerto
+              OR e.aeropuertoDestino.idAeropuerto = :idAeropuerto
+       ORDER BY e.fechaRegistro DESC
+       """)
+       List<EnvioDiario> findByAeropuertoOrigenOrDestino(
+              @Param("idAeropuerto") Integer idAeropuerto
+);
 }

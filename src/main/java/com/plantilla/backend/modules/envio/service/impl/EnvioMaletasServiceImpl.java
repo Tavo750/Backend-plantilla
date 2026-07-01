@@ -12,6 +12,8 @@ import com.plantilla.backend.modules.maestro.repository.AeropuertoRepository;
 import com.plantilla.backend.modules.maestro.repository.PoliticaEntregaRepository;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
+
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -168,5 +170,12 @@ public class EnvioMaletasServiceImpl implements EnvioMaletasService {
     @Override
     public void eliminarEnvio(Integer id) {
         envioMaletasRepository.deleteById((Integer) id);
+    }
+     @Override
+    public List<EnvioMaletas> listarPorAeropuertoOrigen(Integer idAeropuerto) {
+        return envioMaletasRepository.findByAeropuertoOrigenIdAeropuertoOrderByFechaRegistroDesc(
+                idAeropuerto,
+                PageRequest.of(0, 100)
+        );
     }
 }

@@ -51,4 +51,14 @@ public class EnvioDiarioController {
         envioDiarioService.eliminarEnvio(id);
         return ResponseEntity.ok(ApiResponse.success("Envío diario eliminado", null));
     }
+
+    @GetMapping("/aeropuerto/{idAeropuerto}")
+    @Operation(summary = "Listar envíos diarios por aeropuerto")
+    public ResponseEntity<ApiResponse<List<EnvioDiario>>> listarEnviosPorAeropuerto(
+            @PathVariable Integer idAeropuerto
+    ) {
+        return ResponseEntity.ok(
+                ApiResponse.success(envioDiarioService.listarEnviosPorAeropuerto(idAeropuerto))
+        );
+    }
 }
