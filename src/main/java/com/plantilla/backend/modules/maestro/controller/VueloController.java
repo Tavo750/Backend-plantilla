@@ -5,6 +5,7 @@ import com.plantilla.backend.modules.maestro.entity.Aeropuerto;
 import com.plantilla.backend.modules.maestro.entity.Vuelo;
 import com.plantilla.backend.modules.maestro.repository.AeropuertoRepository;
 import com.plantilla.backend.modules.maestro.repository.VueloRepository;
+import com.plantilla.backend.modules.simulacion.service.CancelacionVueloService;
 import com.plantilla.backend.shared.dto.ApiResponse;
 import com.plantilla.backend.shared.enums.EstadoVuelo;
 import com.plantilla.backend.shared.errors.BusinessException;
@@ -26,6 +27,7 @@ public class VueloController {
 
     private final VueloRepository vueloRepository;
     private final AeropuertoRepository aeropuertoRepository;
+    private final CancelacionVueloService cancelacionVueloService;
 
     // ── CRUD ─────────────────────────────────────────────────────
 
@@ -137,8 +139,19 @@ public class VueloController {
         resultado.put("codigoVuelo", codigoVuelo);
         resultado.put("estadoAnterior", estadoAnterior);
         resultado.put("estadoActual", EstadoVuelo.CANCELADO);
-        resultado.put("mensaje",
-                "Vuelo cancelado. Re-ejecuta la simulación para re-rutear los envíos afectados.");
+
+        // Replanificación: marcar asignaciones del vuelo como canceladas para
+        // que el siguiente ciclo ALNS re-rutee esas maletas (excluye vuelos CANCELADO)
+        try {
+            Map<String, Object> replan =
+                    cancelacionVueloService.cancelarVueloYReplanificar(vuelo.getIdVuelo());
+            resultado.put("replanificacion", replan);
+            resultado.put("mensaje",
+                    "Vuelo cancelado. Maletas marcadas para replanificación en el próximo ciclo.");
+        } catch (Exception e) {
+            resultado.put("mensaje",
+                    "Vuelo cancelado. Re-ejecuta la simulación para re-rutear los envíos afectados.");
+        }
 
         return ResponseEntity.ok(ApiResponse.success("Vuelo cancelado correctamente", resultado));
     }

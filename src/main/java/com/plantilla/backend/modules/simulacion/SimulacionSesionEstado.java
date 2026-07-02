@@ -22,6 +22,13 @@ public class SimulacionSesionEstado {
     private LocalDateTime punteroSim;
     private int ciclosEjecutados = 0;
     private ScheduledFuture<?> tareaScheduled;
+    private boolean modoColapso = false;
+
+    /** Instante real (wall-clock) en que el cliente empezó a reproducir: ancla del reloj de pantalla */
+    private long inicioRealMs = System.currentTimeMillis();
+
+    /** IDs de envíos no asignados en ventanas anteriores que se reintentan (arrastre) */
+    private java.util.List<Integer> arrastreIds = new java.util.ArrayList<>();
 
     public SimulacionSesionEstado(String sessionId, WebSocketSession wsSession,
                                    LocalDateTime fechaInicio, int K, int maxMaletasSC) {
