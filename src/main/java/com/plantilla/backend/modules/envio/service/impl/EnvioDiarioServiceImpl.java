@@ -130,8 +130,7 @@ public class EnvioDiarioServiceImpl implements EnvioDiarioService {
                     HttpStatus.BAD_REQUEST,
                     "Capacidad insuficiente en el aeropuerto " + origen.getCodigoOaci()
                             + ". Capacidad máxima: " + capacidadMaxima
-                            + ", en uso: " + cantidadActual
-                            + ", disponible: " + disponible);
+                            + ". Disponible: " + disponible);
         }
     }
 
