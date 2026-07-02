@@ -124,11 +124,14 @@ public class EnvioDiarioServiceImpl implements EnvioDiarioService {
 
         int disponible = capacidadMaxima - cantidadActual;
 
-        throw new ResponseStatusException(
-        HttpStatus.BAD_REQUEST,
-        "Capacidad insuficiente en el aeropuerto " + origen.getCodigoOaci()
-                + ". Capacidad máxima: " + capacidadMaxima
-        );
+        if (cantidadNueva > disponible) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Capacidad insuficiente en el aeropuerto " + origen.getCodigoOaci()
+                            + ". Capacidad máxima: " + capacidadMaxima
+                            + ". Disponible: " + disponible
+            );
+        }
     }
 
     @Override
