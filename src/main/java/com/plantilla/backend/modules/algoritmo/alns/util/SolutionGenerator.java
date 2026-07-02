@@ -27,9 +27,22 @@ public class SolutionGenerator {
             plan.registrarAlmacen(new Almacen(aero.getCodigoICAO(), aero.getCapacidadAlmacen()));
         }
 
+        // Most-constrained-first: la maleta con MENOS vuelos disponibles desde su
+        // origen se asigna primero (las flexibles encuentran alternativas después).
+        // Evita que una maleta fácil ocupe el último asiento del único vuelo viable
+        // para una maleta difícil. Desempate: prioridad y deadline SLA.
+        Map<Maleta, Integer> opciones = new HashMap<>();
+        for (Maleta m : maletas) {
+            opciones.put(m, flightIndex.buscarVuelosDesdeHasta(
+                    m.getAeropuertoOrigen(), m.getFechaCreacionUTC(),
+                    m.getSlaLimite(), m.getCantidad()).size());
+        }
+
         List<Maleta> maletasOrdenadas = new ArrayList<>(maletas);
         maletasOrdenadas.sort((m1, m2) -> {
-            int cmp = Integer.compare(m1.getPrioridad(), m2.getPrioridad());
+            int cmp = Integer.compare(opciones.get(m1), opciones.get(m2));
+            if (cmp != 0) return cmp;
+            cmp = Integer.compare(m1.getPrioridad(), m2.getPrioridad());
             if (cmp != 0) return cmp;
             return Long.compare(m1.getSlaLimite(), m2.getSlaLimite());
         });
@@ -75,7 +88,7 @@ public class SolutionGenerator {
             }
         }
 
-        while (!cola.isEmpty() && rutasEncontradas.size() < 5) {
+        while (!cola.isEmpty() && rutasEncontradas.size() < 8) {
             Ruta actual = cola.poll();
             if (actual.getNumeroVuelos() >= 3) continue;
 
