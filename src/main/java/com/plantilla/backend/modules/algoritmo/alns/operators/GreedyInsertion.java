@@ -32,12 +32,19 @@ public class GreedyInsertion implements RepairOperator {
         });
 
         for (Maleta maleta : maletasPendientes) {
-            Ruta mejorRuta = null;
-            double mejorCosto = Double.MAX_VALUE;
-
             List<Ruta> rutasFactibles = encontrarRutasFactibles(maleta, plan, flightIndex);
 
-            for (Ruta ruta : rutasFactibles) {
+            // SLA primero: si existen rutas que cumplen el deadline, solo se
+            // compite entre ellas; las tardías son último recurso
+            List<Ruta> cumplenSla = new ArrayList<>();
+            for (Ruta r : rutasFactibles) {
+                if (!maleta.isSLAExpirado(r.getHoraLlegadaFinal())) cumplenSla.add(r);
+            }
+            List<Ruta> candidatas = cumplenSla.isEmpty() ? rutasFactibles : cumplenSla;
+
+            Ruta mejorRuta = null;
+            double mejorCosto = Double.MAX_VALUE;
+            for (Ruta ruta : candidatas) {
                 double costo = evaluarCostoInsercion(maleta, ruta);
                 double noise = costo * NOISE_FACTOR * (random.nextDouble() * 2 - 1);
                 double costoConRuido = costo + noise;
@@ -64,7 +71,11 @@ public class GreedyInsertion implements RepairOperator {
         long deadlineUTC = maleta.getSlaLimite();
         int cantidad = maleta.getCantidad();
 
-        Queue<Ruta> cola = new LinkedList<>();
+        // Exploración por llegada más temprana + poda de dominados: las rutas
+        // encontradas primero son las que llegan antes (mejor SLA)
+        PriorityQueue<Ruta> cola = new PriorityQueue<>(
+                Comparator.comparingLong(Ruta::getHoraLlegadaFinal));
+        Map<String, Long> mejorLlegadaPor = new HashMap<>();
 
         List<Vuelo> vuelosIniciales = flightIndex.buscarVuelosDesdeHasta(
                 origen, despuesUTC, deadlineUTC, cantidad);
@@ -80,7 +91,11 @@ public class GreedyInsertion implements RepairOperator {
                 rutas.add(ruta);
                 if (rutas.size() >= 15) return rutas;
             } else {
-                cola.add(ruta);
+                Long mejor = mejorLlegadaPor.get(vuelo.getDestino());
+                if (mejor == null || vuelo.getHoraLlegada() < mejor) {
+                    mejorLlegadaPor.put(vuelo.getDestino(), vuelo.getHoraLlegada());
+                    cola.add(ruta);
+                }
             }
         }
 
@@ -113,7 +128,11 @@ public class GreedyInsertion implements RepairOperator {
                     rutas.add(nuevaRuta);
                     if (rutas.size() >= 15) return rutas;
                 } else if (nuevaRuta.getNumeroVuelos() < 3) {
-                    cola.add(nuevaRuta);
+                    Long mejor = mejorLlegadaPor.get(siguienteVuelo.getDestino());
+                    if (mejor == null || siguienteVuelo.getHoraLlegada() < mejor) {
+                        mejorLlegadaPor.put(siguienteVuelo.getDestino(), siguienteVuelo.getHoraLlegada());
+                        cola.add(nuevaRuta);
+                    }
                 }
             }
         }

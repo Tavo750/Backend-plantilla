@@ -41,6 +41,29 @@ public class SimulacionPeriodoController {
 
     private final AlnsSimulacionService alnsSimulacionService;
     private final ObjectMapper objectMapper;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
+    @GetMapping("/rango-datos")
+    @Operation(
+            summary = "Rango de fechas con pedidos disponibles",
+            description = "Devuelve la primera y última fecha con envíos registrados en la BD, "
+                    + "para habilitar el selector de fecha de la simulación."
+    )
+    public ResponseEntity<ApiResponse<Map<String, Object>>> rangoDatos() {
+        Map<String, Object> rango = new java.util.LinkedHashMap<>();
+        try {
+            java.sql.Date desde = jdbcTemplate.queryForObject(
+                    "SELECT MIN(DATE(fecha_registro)) FROM envio_maletas", java.sql.Date.class);
+            java.sql.Date hasta = jdbcTemplate.queryForObject(
+                    "SELECT MAX(DATE(fecha_registro)) FROM envio_maletas", java.sql.Date.class);
+            rango.put("desde", desde != null ? desde.toString() : null);
+            rango.put("hasta", hasta != null ? hasta.toString() : null);
+        } catch (Exception e) {
+            rango.put("desde", null);
+            rango.put("hasta", null);
+        }
+        return ResponseEntity.ok(ApiResponse.success(rango));
+    }
 
     @PostMapping("/periodo")
     @Operation(

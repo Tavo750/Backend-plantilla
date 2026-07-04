@@ -35,4 +35,11 @@ public class ColapsoCache {
 
     @Column(name = "demanda_dia_colapso")
     private Long demandaDiaColapso;
+
+    /** Versión del criterio con que se calculó (si cambia el criterio, se recalcula) */
+    @Column(name = "criterio", length = 30)
+    private String criterio;
+
+    @Column(name = "detalle", length = 200)
+    private String detalle;
 }
