@@ -209,6 +209,7 @@ public class SimulacionPureService {
         // Construir respuesta sin escritura en BD
         Map<String, Map<String, Object>> vuelosMap = new LinkedHashMap<>();
         Map<String, List<Map<String, Object>>> enviosPorVuelo = new LinkedHashMap<>();
+        int violacionesSla = 0;
 
         // Índice idEnvio → entidad original (para exponer fecha de registro al tracking)
         Map<Integer, EnvioMaletas> envioPorId = enviosSC.stream()
@@ -218,6 +219,7 @@ public class SimulacionPureService {
             Maleta maleta = entry.getKey();
             Ruta ruta     = entry.getValue();
             boolean cumpleSla = !maleta.isSLAExpirado(ruta.getHoraLlegadaFinal());
+            if (!cumpleSla) violacionesSla++;
 
             for (com.plantilla.backend.modules.algoritmo.alns.model.Vuelo v : ruta.getVuelos()) {
                 String key = v.getId();
@@ -276,9 +278,99 @@ public class SimulacionPureService {
         result.put("nuevosVuelos",    new ArrayList<>(vuelosMap.values()));
         result.put("asignados",       mejorPlan.getTotalMaletasAsignadas());
         result.put("noAsignados",     mejorPlan.getMaletasNoAsignadas().size());
+        result.put("violacionesSla",  violacionesSla);
         result.put("pendientesIds",   acotarArrastre(pendientesIds));
         result.put("arrastreEntrante", arrastreEntrante);
         return result;
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Chequeo de día para la búsqueda de fecha de colapso
+    // ──────────────────────────────────────────────────────────────────
+
+    /** Resultado del chequeo de colapso de un día: maletas sin ruta y fuera de SLA */
+    public record ChequeoDia(int sinRuta, int fueraSla) {
+        public boolean hayViolacion() { return sinRuta > 0 || fueraSla > 0; }
+    }
+
+    /**
+     * Evalúa si en un día calendario el planificador deja alguna maleta sin ruta
+     * o fuera de SLA (definición de colapso del curso). Primero prueba con la
+     * construcción greedy (rápida); solo si esta reporta violaciones ejecuta el
+     * ALNS completo para confirmar que ni el mejor plan puede evitarlas.
+     */
+    @Transactional
+    public ChequeoDia chequearDia(java.time.LocalDate dia) {
+        LocalDateTime desde = dia.atStartOfDay();
+        LocalDateTime hasta = desde.plusDays(1);
+
+        Map<String, Aeropuerto> aeropuertosAlns = dataAdapter.cargarAeropuertos();
+        if (aeropuertosAlns.isEmpty()) return new ChequeoDia(0, 0);
+
+        List<EnvioMaletas> envios =
+                envioMaletasRepository.findByFechaRegistroBetweenOrderByFechaRegistroAsc(desde, hasta);
+        if (envios.isEmpty()) return new ChequeoDia(0, 0);
+
+        List<Maleta> maletas = envios.stream()
+                .map(e -> dataAdapter.convertirEnvio(e, aeropuertosAlns))
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        if (maletas.isEmpty()) return new ChequeoDia(0, 0);
+
+        List<com.plantilla.backend.modules.algoritmo.alns.model.Vuelo> vuelos =
+                dataAdapter.cargarVuelos(desde, hasta.plusDays(5));
+        if (vuelos.isEmpty()) return new ChequeoDia(maletas.size(), 0);
+
+        FlightIndex flightIndex = dataAdapter.construirFlightIndex(vuelos);
+        PlanDeRutas plan = SolutionGenerator.generarPlanInicial(maletas, flightIndex, aeropuertosAlns);
+
+        // Confirmación con ALNS solo si el greedy reporta violaciones (evita falsos positivos)
+        if (contarViolaciones(plan).hayViolacion() && plan.getTotalMaletasAsignadas() > 0) {
+            ALNSEngine engine = new ALNSEngine(
+                    MAX_ITERACIONES, REMOCION_MIN, REMOCION_MAX,
+                    TEMPERATURA_INI, TASA_ENFRIAMIENTO, TASA_REACCION,
+                    PERIODO_ACTUALIZ, flightIndex,
+                    15_000, 150);
+            plan = engine.ejecutar(plan);
+        }
+        ChequeoDia chequeo = contarViolaciones(plan);
+        if (chequeo.hayViolacion()) {
+            logDetalleViolaciones(plan, "chequearDia " + dia);
+        }
+        return chequeo;
+    }
+
+    private ChequeoDia contarViolaciones(PlanDeRutas plan) {
+        int fueraSla = 0;
+        for (Map.Entry<Maleta, Ruta> e : plan.getAsignaciones().entrySet()) {
+            if (e.getKey().isSLAExpirado(e.getValue().getHoraLlegadaFinal())) fueraSla++;
+        }
+        return new ChequeoDia(plan.getMaletasNoAsignadas().size(), fueraSla);
+    }
+
+    /** Diagnóstico: detalla las primeras violaciones encontradas (para auditar si son genuinas) */
+    private void logDetalleViolaciones(PlanDeRutas plan, String contexto) {
+        int mostradas = 0;
+        for (Maleta m : plan.getMaletasNoAsignadas()) {
+            if (mostradas++ >= 5) break;
+            log.warn("[{}] SIN RUTA: envío {} · {} → {} · registro(min)={} · deadline(min)={} · cant={}",
+                    contexto, m.getIdEnvioBackend(), m.getAeropuertoOrigen(), m.getAeropuertoDestino(),
+                    m.getFechaCreacionUTC(), m.getSlaLimite(), m.getCantidad());
+        }
+        for (Map.Entry<Maleta, Ruta> e : plan.getAsignaciones().entrySet()) {
+            if (mostradas >= 10) break;
+            Maleta m = e.getKey();
+            Ruta r = e.getValue();
+            if (m.isSLAExpirado(r.getHoraLlegadaFinal())) {
+                mostradas++;
+                StringBuilder tramos = new StringBuilder();
+                r.getVuelos().forEach(v -> tramos.append(v.getId()).append(' '));
+                log.warn("[{}] FUERA SLA: envío {} · {} → {} · registro(min)={} · deadline(min)={} · llegada(min)={} · atraso={}min · ruta: {}",
+                        contexto, m.getIdEnvioBackend(), m.getAeropuertoOrigen(), m.getAeropuertoDestino(),
+                        m.getFechaCreacionUTC(), m.getSlaLimite(), r.getHoraLlegadaFinal(),
+                        r.getHoraLlegadaFinal() - m.getSlaLimite(), tramos);
+            }
+        }
     }
 
     /** Protección de memoria: si el arrastre crece sin control, se conservan los más antiguos */
@@ -293,6 +385,7 @@ public class SimulacionPureService {
         r.put("nuevosVuelos",    Collections.emptyList());
         r.put("asignados",       0);
         r.put("noAsignados",     0);
+        r.put("violacionesSla",  0);
         r.put("pendientesIds",   Collections.emptyList());
         r.put("arrastreEntrante", 0);
         return r;

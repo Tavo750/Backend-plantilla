@@ -163,9 +163,16 @@ public class BackendDataAdapter {
 
         long fechaCreacionUtcMin = toMinutosUtcDesdeEpoch(e.getFechaRegistro());
 
-        // SLA en minutos (mismo continente 1440, distinto 2880)
-        int slaDuracionMin = aeroOrigen.calcularSLA(aeroDestino);
-        int slaDeadlineMin = (int) (fechaCreacionUtcMin + slaDuracionMin);
+        // SLA: la fecha límite de la BD es la fuente de verdad (continental +24 h /
+        // intercontinental +48 h, calculada al registrar el envío). Solo si falta,
+        // se recalcula desde los continentes.
+        int slaDeadlineMin;
+        if (e.getFechaLimiteEntrega() != null) {
+            slaDeadlineMin = (int) toMinutosUtcDesdeEpoch(e.getFechaLimiteEntrega());
+        } else {
+            int slaDuracionMin = aeroOrigen.calcularSLA(aeroDestino);
+            slaDeadlineMin = (int) (fechaCreacionUtcMin + slaDuracionMin);
+        }
 
         int cantidad = e.getCantidad() != null ? e.getCantidad() : 1;
 

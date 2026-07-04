@@ -1,5 +1,6 @@
 package com.plantilla.backend.modules.simulacion.service;
 
+import com.plantilla.backend.modules.simulacion.SimulacionPureService;
 import com.plantilla.backend.modules.simulacion.entity.ColapsoCache;
 import com.plantilla.backend.modules.simulacion.repository.ColapsoCacheRepository;
 import lombok.RequiredArgsConstructor;
@@ -10,15 +11,20 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.List;
-import java.util.Map;
+import java.util.function.Consumer;
 
 /**
- * Estima la fecha de colapso logístico: primer día en que la demanda de maletas
- * registradas supera la capacidad diaria total de la flota (plan_vuelo_diario).
+ * Busca la fecha de colapso logístico según la definición del curso:
+ * COLAPSO = el primer día en que alguna maleta queda SIN RUTA asignable
+ * o alguna maleta llega FUERA DE SU SLA (atrasada), incluso con el mejor
+ * plan que el ALNS puede producir.
  *
- * La búsqueda pesada se ejecuta UNA sola vez: el resultado se cachea en memoria
- * y en la tabla colapso_cache (sobrevive reinicios del backend).
+ * La búsqueda recorre los días con demanda en orden cronológico y evalúa
+ * cada uno con el planificador real ({@link SimulacionPureService#chequearDia}):
+ * greedy rápido como filtro y ALNS como confirmación. Es costosa, por eso se
+ * ejecuta UNA sola vez: el resultado se cachea en memoria y en la tabla
+ * colapso_cache (clave de criterio incluida — si el criterio cambia de versión,
+ * se recalcula).
  */
 @Service
 @RequiredArgsConstructor
@@ -26,109 +32,129 @@ public class ColapsoEstimadorService {
 
     private static final Logger log = LoggerFactory.getLogger(ColapsoEstimadorService.class);
 
+    /** Versión del criterio de colapso: si cambia, la caché previa se ignora
+     *  (V3 = enrutador con exploración por llegada temprana y preferencia SLA) */
+    private static final String CRITERIO = "SLA_O_SIN_RUTA_V3";
+
+    /** Tope de días a examinar (protección: ~2 años de datos) */
+    private static final int MAX_DIAS_BUSQUEDA = 800;
+
     private final JdbcTemplate jdbcTemplate;
     private final ColapsoCacheRepository cacheRepository;
+    private final SimulacionPureService simulacionPureService;
+
+    /** Marcador en BD para el resultado "no hay colapso en los datos" */
+    private static final String SIN_COLAPSO = "SIN_COLAPSO";
 
     private volatile LocalDateTime fechaColapsoMemoria;
+    private volatile boolean sinColapsoConfirmado = false;
 
-    /** true si ya existe un resultado cacheado (memoria o BD): la búsqueda será instantánea */
+    /** true si ya existe un resultado cacheado con el criterio vigente (incluye "sin colapso") */
     public boolean hayCache() {
-        if (fechaColapsoMemoria != null) return true;
+        if (fechaColapsoMemoria != null || sinColapsoConfirmado) return true;
         try {
-            return cacheRepository.count() > 0;
+            return cacheRepository.findTopByOrderByIdDesc()
+                    .map(c -> CRITERIO.equals(c.getCriterio()))
+                    .orElse(false);
         } catch (Exception e) {
             return false;
         }
     }
 
-    /**
-     * Devuelve la fecha estimada de colapso (00:00 del día en que la demanda supera
-     * la capacidad de la flota) o null si nunca colapsa según los datos.
-     */
     public synchronized LocalDateTime obtenerFechaColapso() {
-        // 1. Caché en memoria
-        if (fechaColapsoMemoria != null) return fechaColapsoMemoria;
+        return obtenerFechaColapso(null);
+    }
 
-        // 2. Caché en BD
+    /**
+     * Devuelve la fecha del primer día con colapso (00:00) o null si el sistema
+     * nunca colapsa con los datos actuales.
+     *
+     * @param progreso callback opcional para reportar avance al cliente
+     */
+    public synchronized LocalDateTime obtenerFechaColapso(Consumer<String> progreso) {
+        // 1. Caché en memoria (incluye el resultado "sin colapso")
+        if (fechaColapsoMemoria != null) return fechaColapsoMemoria;
+        if (sinColapsoConfirmado) return null;
+
+        // 2. Caché en BD (solo si fue calculada con el criterio vigente)
         var enBd = cacheRepository.findTopByOrderByIdDesc();
-        if (enBd.isPresent()) {
+        if (enBd.isPresent() && CRITERIO.equals(enBd.get().getCriterio())) {
+            if (SIN_COLAPSO.equals(enBd.get().getDetalle())) {
+                sinColapsoConfirmado = true;
+                log.info("Caché BD: sin colapso en los datos ({})", CRITERIO);
+                return null;
+            }
             fechaColapsoMemoria = enBd.get().getFechaColapsoEstimada();
-            log.info("Fecha de colapso recuperada de caché BD: {}", fechaColapsoMemoria);
+            log.info("Fecha de colapso recuperada de caché BD: {} ({})", fechaColapsoMemoria, CRITERIO);
             return fechaColapsoMemoria;
         }
 
-        // 3. Calcular (única vez) y persistir
-        Resultado calc = calcular();
-        if (calc == null) return null;
-
-        ColapsoCache cache = new ColapsoCache();
-        cache.setFechaColapsoEstimada(calc.fecha());
-        cache.setFechaCalculo(LocalDateTime.now());
-        cache.setCapacidadDiaria(calc.capacidadDiaria());
-        cache.setDemandaDiaColapso(calc.demanda());
-        try {
-            cacheRepository.save(cache);
-        } catch (Exception e) {
-            log.warn("No se pudo persistir la caché de colapso (se mantiene en memoria): {}", e.getMessage());
+        // 3. Búsqueda cronológica con el planificador real (única vez)
+        LocalDate desde = consultarFecha("SELECT MIN(DATE(fecha_registro)) FROM envio_maletas");
+        LocalDate hasta = consultarFecha("SELECT MAX(DATE(fecha_registro)) FROM envio_maletas");
+        if (desde == null || hasta == null) {
+            log.warn("envio_maletas vacío: no se puede buscar colapso");
+            return null;
         }
-        fechaColapsoMemoria = calc.fecha();
-        log.info("Fecha de colapso calculada: {} (demanda {} > capacidad diaria {})",
-                calc.fecha(), calc.demanda(), calc.capacidadDiaria());
-        return fechaColapsoMemoria;
-    }
 
-    private record Resultado(LocalDateTime fecha, long capacidadDiaria, long demanda) {}
-
-    /**
-     * Criterio de estimación (dos niveles):
-     *  1. Si algún día la demanda agregada supera la capacidad agregada de la flota,
-     *     ese es el colapso teórico garantizado.
-     *  2. Si no (caso normal: la capacidad agregada es holgada pero el colapso real
-     *     lo causan las restricciones locales — capacidad por vuelo, rutas, SLA —),
-     *     la fecha candidata es el DÍA DE MÁXIMA DEMANDA: el punto de mayor estrés
-     *     del sistema. El veredicto final lo da la simulación ALNS de confirmación
-     *     que corre a continuación (COLAPSO_DETECTADO si supera el umbral de
-     *     maletas sin asignar, o FIN sin colapso).
-     */
-    private Resultado calcular() {
         Long capacidadDiaria = jdbcTemplate.queryForObject(
                 "SELECT COALESCE(SUM(capacidad), 0) FROM plan_vuelo_diario", Long.class);
-        if (capacidadDiaria == null || capacidadDiaria == 0) {
-            log.warn("plan_vuelo_diario sin capacidad: no se puede estimar colapso");
-            return null;
-        }
 
-        List<Map<String, Object>> demandaPorDia = jdbcTemplate.queryForList(
-                "SELECT DATE(fecha_registro) AS dia, SUM(cantidad) AS demanda " +
-                "FROM envio_maletas GROUP BY DATE(fecha_registro) ORDER BY dia");
-        if (demandaPorDia.isEmpty()) {
-            log.warn("envio_maletas vacío: no se puede estimar colapso");
-            return null;
-        }
-
-        Map<String, Object> pico = null;
-        long demandaPico = -1;
-        for (Map<String, Object> fila : demandaPorDia) {
-            long demanda = ((Number) fila.get("demanda")).longValue();
-            // Nivel 1: saturación agregada (colapso teórico garantizado)
-            if (demanda > capacidadDiaria) {
-                return new Resultado(aFecha(fila.get("dia")).atStartOfDay(), capacidadDiaria, demanda);
+        log.info("Buscando fecha de colapso ({}) entre {} y {}...", CRITERIO, desde, hasta);
+        int examinados = 0;
+        for (LocalDate dia = desde; !dia.isAfter(hasta) && examinados < MAX_DIAS_BUSQUEDA; dia = dia.plusDays(1)) {
+            examinados++;
+            if (progreso != null && examinados % 5 == 1) {
+                progreso.accept("Evaluando planificación del " + dia + "...");
             }
-            // Nivel 2: registrar el pico de demanda
-            if (demanda > demandaPico) {
-                demandaPico = demanda;
-                pico = fila;
+
+            SimulacionPureService.ChequeoDia chequeo = simulacionPureService.chequearDia(dia);
+            if (chequeo.hayViolacion()) {
+                String detalle = chequeo.sinRuta() + " sin ruta · " + chequeo.fueraSla() + " fuera de SLA";
+                log.info("Colapso encontrado el {}: {}", dia, detalle);
+                guardarCache(dia.atStartOfDay(), capacidadDiaria, detalle);
+                return fechaColapsoMemoria;
             }
         }
 
-        log.info("Sin saturación agregada (capacidad {}): usando pico de demanda {} como candidato",
-                capacidadDiaria, demandaPico);
-        return new Resultado(aFecha(pico.get("dia")).atStartOfDay(), capacidadDiaria, demandaPico);
+        log.info("Sin colapso en los datos: el planificador cubre todos los días sin violaciones");
+        // Cachear también el "sin colapso": la búsqueda es cara y no debe repetirse
+        sinColapsoConfirmado = true;
+        try {
+            ColapsoCache cache = new ColapsoCache();
+            cache.setFechaColapsoEstimada(LocalDateTime.now());
+            cache.setFechaCalculo(LocalDateTime.now());
+            cache.setCapacidadDiaria(capacidadDiaria);
+            cache.setCriterio(CRITERIO);
+            cache.setDetalle(SIN_COLAPSO);
+            cacheRepository.save(cache);
+        } catch (Exception e) {
+            log.warn("No se pudo persistir 'sin colapso' (queda en memoria): {}", e.getMessage());
+        }
+        return null;
     }
 
-    private LocalDate aFecha(Object dia) {
-        return (dia instanceof java.sql.Date sqlDate)
-                ? sqlDate.toLocalDate()
-                : LocalDate.parse(dia.toString());
+    private void guardarCache(LocalDateTime fecha, Long capacidadDiaria, String detalle) {
+        fechaColapsoMemoria = fecha;
+        try {
+            ColapsoCache cache = new ColapsoCache();
+            cache.setFechaColapsoEstimada(fecha);
+            cache.setFechaCalculo(LocalDateTime.now());
+            cache.setCapacidadDiaria(capacidadDiaria);
+            cache.setCriterio(CRITERIO);
+            cache.setDetalle(detalle);
+            cacheRepository.save(cache);
+        } catch (Exception e) {
+            log.warn("No se pudo persistir la caché de colapso (queda en memoria): {}", e.getMessage());
+        }
+    }
+
+    private LocalDate consultarFecha(String sql) {
+        try {
+            java.sql.Date d = jdbcTemplate.queryForObject(sql, java.sql.Date.class);
+            return d != null ? d.toLocalDate() : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

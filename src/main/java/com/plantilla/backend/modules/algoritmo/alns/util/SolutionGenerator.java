@@ -69,7 +69,13 @@ public class SolutionGenerator {
         int cantidad = maleta.getCantidad();
 
         List<Ruta> rutasEncontradas = new ArrayList<>();
-        Queue<Ruta> cola = new LinkedList<>();
+        // Exploración por llegada más temprana (no FIFO): las primeras rutas
+        // completadas son las que llegan antes → maximiza el cumplimiento de SLA
+        PriorityQueue<Ruta> cola = new PriorityQueue<>(
+                Comparator.comparingLong(Ruta::getHoraLlegadaFinal));
+        // Poda de dominados: si ya llegamos a un aeropuerto más temprano, no
+        // vale la pena extender una ruta que llega más tarde al mismo punto
+        Map<String, Long> mejorLlegadaPor = new HashMap<>();
 
         List<Vuelo> vuelosIniciales = flightIndex.buscarVuelosDesdeHasta(
                 origen, despuesUTC, deadlineUTC, cantidad);
@@ -84,11 +90,15 @@ public class SolutionGenerator {
             if (vuelo.getDestino().equals(destino)) {
                 rutasEncontradas.add(ruta);
             } else {
-                cola.add(ruta);
+                Long mejor = mejorLlegadaPor.get(vuelo.getDestino());
+                if (mejor == null || vuelo.getHoraLlegada() < mejor) {
+                    mejorLlegadaPor.put(vuelo.getDestino(), vuelo.getHoraLlegada());
+                    cola.add(ruta);
+                }
             }
         }
 
-        while (!cola.isEmpty() && rutasEncontradas.size() < 8) {
+        while (!cola.isEmpty() && rutasEncontradas.size() < 10) {
             Ruta actual = cola.poll();
             if (actual.getNumeroVuelos() >= 3) continue;
 
@@ -115,14 +125,32 @@ public class SolutionGenerator {
 
                 if (siguiente.getDestino().equals(destino)) {
                     rutasEncontradas.add(nuevaRuta);
+                    if (rutasEncontradas.size() >= 10) break;
                 } else if (nuevaRuta.getNumeroVuelos() < 3) {
-                    cola.add(nuevaRuta);
+                    Long mejor = mejorLlegadaPor.get(siguiente.getDestino());
+                    if (mejor == null || siguiente.getHoraLlegada() < mejor) {
+                        mejorLlegadaPor.put(siguiente.getDestino(), siguiente.getHoraLlegada());
+                        cola.add(nuevaRuta);
+                    }
                 }
             }
         }
 
         if (rutasEncontradas.isEmpty()) return null;
-        rutasEncontradas.sort(Comparator.comparingLong(Ruta::getTiempoTotal));
+
+        // SLA primero: entre las rutas que CUMPLEN el deadline, la más rápida.
+        // Solo si ninguna cumple, se acepta la de menor llegada (la menos tardía).
+        Ruta mejorCumple = null;
+        long mejorTiempo = Long.MAX_VALUE;
+        for (Ruta r : rutasEncontradas) {
+            if (!maleta.isSLAExpirado(r.getHoraLlegadaFinal()) && r.getTiempoTotal() < mejorTiempo) {
+                mejorCumple = r;
+                mejorTiempo = r.getTiempoTotal();
+            }
+        }
+        if (mejorCumple != null) return mejorCumple;
+
+        rutasEncontradas.sort(Comparator.comparingLong(Ruta::getHoraLlegadaFinal));
         return rutasEncontradas.get(0);
     }
 }

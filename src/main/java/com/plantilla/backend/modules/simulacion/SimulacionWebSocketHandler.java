@@ -57,9 +57,6 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper          objectMapper;
     private final com.plantilla.backend.modules.simulacion.service.ColapsoEstimadorService colapsoEstimador;
 
-    /** Umbral de maletas sin asignar (%) para declarar COLAPSO_DETECTADO */
-    private static final double UMBRAL_COLAPSO_PCT = 30.0;
-
     // ──────────────────────────────────────────────────────────
     // Ciclo de vida WebSocket
     // ──────────────────────────────────────────────────────────
@@ -141,13 +138,14 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                 boolean cacheado = colapsoEstimador.hayCache();
                 if (!cacheado) {
                     enviar(session, Map.of("type", "BUSCANDO_COLAPSO",
-                            "mensaje", "Analizando demanda diaria vs capacidad de la flota..."));
+                            "mensaje", "Buscando el primer día con maletas sin ruta o fuera de SLA..."));
                 }
 
-                LocalDateTime fechaColapso = colapsoEstimador.obtenerFechaColapso();
+                LocalDateTime fechaColapso = colapsoEstimador.obtenerFechaColapso(
+                        msg2 -> enviar(session, Map.of("type", "BUSCANDO_COLAPSO", "mensaje", msg2)));
                 if (fechaColapso == null) {
                     enviar(session, Map.of("type", "ERROR",
-                            "mensaje", "No se encontró fecha de colapso: la demanda diaria nunca supera la capacidad de la flota."));
+                            "mensaje", "No se encontró colapso: el planificador cubre toda la demanda sin maletas sin ruta ni fuera de SLA."));
                     return;
                 }
 
@@ -289,20 +287,28 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             ));
             enviar(estado.getWsSession(), update);
 
-            // Modo colapso: declarar COLAPSO_DETECTADO si el % sin asignar supera el umbral
+            // Modo colapso — definición del curso: colapsa cuando alguna maleta queda
+            // SIN RUTA asignable o alguna maleta llega FUERA DE SU SLA (atrasada)
             if (estado.isModoColapso()) {
                 long asignados   = ((Number) resultado.get("asignados")).longValue();
-                long noAsignados = ((Number) resultado.get("noAsignados")).longValue();
-                long total = asignados + noAsignados;
-                double pct = total > 0 ? noAsignados * 100.0 / total : 0.0;
-                if (total > 0 && pct >= UMBRAL_COLAPSO_PCT) {
+                long sinRuta     = ((Number) resultado.get("noAsignados")).longValue();
+                long fueraSla    = ((Number) resultado.getOrDefault("violacionesSla", 0)).longValue();
+                if (sinRuta > 0 || fueraSla > 0) {
+                    long total = asignados + sinRuta;
+                    double pct = total > 0 ? sinRuta * 100.0 / total : 0.0;
                     long duracionMin = java.time.Duration
                             .between(estado.getFechaInicio(), hasta).toMinutes();
+                    String motivo = (sinRuta > 0 ? sinRuta + " maleta(s) sin ruta posible" : "")
+                            + (sinRuta > 0 && fueraSla > 0 ? " · " : "")
+                            + (fueraSla > 0 ? fueraSla + " maleta(s) fuera de SLA" : "");
                     enviar(estado.getWsSession(), Map.of(
                             "type",               "COLAPSO_DETECTADO",
                             "tiempoColapsoMs",    hasta.toInstant(ZoneOffset.UTC).toEpochMilli(),
                             "duracionSimMinutos", duracionMin,
-                            "pctNoAsignados",     Math.round(pct)));
+                            "pctNoAsignados",     Math.round(pct),
+                            "maletasSinRuta",     sinRuta,
+                            "maletasFueraSla",    fueraSla,
+                            "motivo",             motivo));
                     enviar(estado.getWsSession(), Map.of(
                             "type",              "FIN",
                             "ciclosCompletados", ciclo));
