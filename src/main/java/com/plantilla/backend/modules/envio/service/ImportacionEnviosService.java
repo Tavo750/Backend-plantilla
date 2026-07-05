@@ -44,10 +44,10 @@ public class ImportacionEnviosService {
             throw new IllegalArgumentException("La cantidad de días debe ser mayor a 0.");
         }
 
-        Resource resource = resourceLoader.getResource("classpath:data/" + nombreArchivo);
+        Resource resource = resourceLoader.getResource("classpath:data/_envios_preliminar_/" + nombreArchivo);
 
         if (!resource.exists()) {
-            throw new IllegalStateException("No se encontró el archivo src/main/resources/data/" + nombreArchivo);
+            throw new IllegalStateException("No se encontró el archivo src/main/resources/data/_envios_preliminar_/" + nombreArchivo);
         }
 
         Map<String, Aeropuerto> aeropuertosPorOaci = aeropuertoRepository.findAll()
