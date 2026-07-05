@@ -36,12 +36,14 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(SimulacionWebSocketHandler.class);
 
-    /** 5 minutos reales entre ciclos ALNS (= K×5 min simulados con K=120 → 10 hs sim) */
+    /** Tamaño de ventana por ciclo ALNS en segundos reales de reproducción (= K×5 min sim con K=120 → 10 hs sim) */
     private static final int CICLO_REAL_SEG    = 300;
-    /** Delay inicial antes del primer ciclo (da tiempo al cliente de procesar INIT) */
-    private static final int INICIO_DELAY_SEG  = 10;
+    /** Ventanas que el productor mantiene planificadas POR DELANTE del reloj de pantalla (prefetch acotado) */
+    private static final int PREFETCH_VENTANAS = 2;
+    /** Frecuencia con la que el productor revisa si el búfer necesita otra ventana */
+    private static final int CHECK_BUFER_SEG   = 10;
     private static final int K_DEFAULT         = 120;
-    private static final int SC_DEFAULT        = 1500;
+    private static final int SC_DEFAULT        = 5000;
 
     private final Map<String, SimulacionSesionEstado> sesiones = new ConcurrentHashMap<>();
     private final ScheduledExecutorService scheduler =
@@ -53,6 +55,7 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
 
     private final SimulacionPureService simulacionService;
     private final ObjectMapper          objectMapper;
+    private final com.plantilla.backend.modules.simulacion.service.ColapsoEstimadorService colapsoEstimador;
 
     // ──────────────────────────────────────────────────────────
     // Ciclo de vida WebSocket
@@ -78,6 +81,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
 
             if ("START".equals(type)) {
                 manejarStart(session, msg);
+            } else if ("START_COLAPSO".equals(type)) {
+                manejarStartColapso(session, msg);
             } else if ("STOP".equals(type)) {
                 detenerSesion(session.getId());
                 enviar(session, Map.of("type", "STOPPED"));
@@ -112,6 +117,63 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
         scheduler.submit(() -> iniciarSimulacion(estado));
     }
 
+    // ──────────────────────────────────────────────────────────
+    // Simulación de colapso
+    // ──────────────────────────────────────────────────────────
+
+    /**
+     * Busca la fecha estimada de colapso (cacheada: solo se calcula la primera vez)
+     * y lanza una simulación de confirmación desde 1 día antes de esa fecha.
+     */
+    private void manejarStartColapso(WebSocketSession session, Map<String, Object> msg) {
+        detenerSesion(session.getId());
+
+        int K = msg.containsKey("K")
+                ? ((Number) msg.get("K")).intValue() : K_DEFAULT;
+        int maxMaletasSC = msg.containsKey("maxMaletasSC")
+                ? ((Number) msg.get("maxMaletasSC")).intValue() : SC_DEFAULT;
+
+        scheduler.submit(() -> {
+            try {
+                boolean cacheado = colapsoEstimador.hayCache();
+                if (!cacheado) {
+                    enviar(session, Map.of("type", "BUSCANDO_COLAPSO",
+                            "mensaje", "Buscando el primer día con maletas sin ruta o fuera de SLA..."));
+                }
+
+                LocalDateTime fechaColapso = colapsoEstimador.obtenerFechaColapso(
+                        msg2 -> enviar(session, Map.of("type", "BUSCANDO_COLAPSO", "mensaje", msg2)));
+                if (fechaColapso == null) {
+                    enviar(session, Map.of("type", "ERROR",
+                            "mensaje", "No se encontró colapso: el planificador cubre toda la demanda sin maletas sin ruta ni fuera de SLA."));
+                    return;
+                }
+
+                LocalDateTime inicioSim = fechaColapso.minusDays(1);
+
+                SimulacionSesionEstado estado = new SimulacionSesionEstado(
+                        session.getId(), session, inicioSim, K, maxMaletasSC);
+                estado.setModoColapso(true);
+                sesiones.put(session.getId(), estado);
+
+                enviar(session, Map.of(
+                        "type",                   "INICIO_COLAPSO",
+                        "fechaColapsoEstimadaMs", fechaColapso.toInstant(ZoneOffset.UTC).toEpochMilli(),
+                        "fechaInicioSimMs",       inicioSim.toInstant(ZoneOffset.UTC).toEpochMilli(),
+                        "maxCiclos",              SimulacionSesionEstado.MAX_CICLOS,
+                        "cacheado",               cacheado));
+
+                iniciarSimulacion(estado);
+
+            } catch (Exception e) {
+                log.error("Error iniciando simulacion de colapso: {}", e.getMessage(), e);
+                enviar(session, Map.of("type", "ERROR", "mensaje",
+                        "Error buscando fecha de colapso: " + e.getMessage()));
+                sesiones.remove(session.getId());
+            }
+        });
+    }
+
     private void iniciarSimulacion(SimulacionSesionEstado estado) {
         try {
             // 1. Enviar snapshot inicial (aviones en vuelo, aeropuertos vacíos)
@@ -127,11 +189,17 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             initMsg.put("aeropuertos",   snapshot.get("aeropuertos"));
             enviar(estado.getWsSession(), initMsg);
 
-            // 2. Programar ciclos ALNS cada CICLO_REAL_SEG segundos
+            // 2. Productor con prefetch acotado: mantiene siempre PREFETCH_VENTANAS
+            //    ventanas planificadas por delante del reloj de pantalla del cliente.
+            //    El reloj de pantalla es determinista (avanza K× el tiempo real desde INIT),
+            //    así que se calcula aquí sin necesidad de feedback del cliente.
+            //    A diferencia del schedule fijo anterior, el tiempo de cómputo del ALNS
+            //    no acumula deriva: si un ciclo tarda, el productor se pone al día solo.
+            estado.setInicioRealMs(System.currentTimeMillis());
             ScheduledFuture<?> tarea = scheduler.scheduleWithFixedDelay(
-                    () -> ejecutarCiclo(estado),
-                    INICIO_DELAY_SEG,
-                    CICLO_REAL_SEG,
+                    () -> productorTick(estado),
+                    0,
+                    CHECK_BUFER_SEG,
                     TimeUnit.SECONDS);
             estado.setTareaScheduled(tarea);
 
@@ -146,6 +214,31 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     // ──────────────────────────────────────────────────────────
     // Ciclos ALNS
     // ──────────────────────────────────────────────────────────
+
+    /**
+     * Tick del productor: calcula la posición actual del reloj de pantalla y ejecuta
+     * tantos ciclos ALNS como haga falta para que el búfer de datos planificados
+     * quede PREFETCH_VENTANAS ventanas por delante. Se auto-detiene al llegar a
+     * MAX_CICLOS (FIN lo emite ejecutarCiclo) o si la sesión fue detenida.
+     */
+    private void productorTick(SimulacionSesionEstado estado) {
+        if (!estado.estaActiva()) {
+            detenerSesion(estado.getSessionId());
+            return;
+        }
+        synchronized (estado) {
+            long ventanaSimMin   = (long) estado.getK() * CICLO_REAL_SEG / 60;
+            long transcurridoSeg = (System.currentTimeMillis() - estado.getInicioRealMs()) / 1000;
+            LocalDateTime relojPantalla    = estado.getFechaInicio().plusSeconds(transcurridoSeg * estado.getK());
+            LocalDateTime limiteProduccion = relojPantalla.plusMinutes(ventanaSimMin * PREFETCH_VENTANAS);
+
+            while (estado.estaActiva()
+                    && sesiones.containsKey(estado.getSessionId())
+                    && estado.getPunteroSim().isBefore(limiteProduccion)) {
+                ejecutarCiclo(estado);
+            }
+        }
+    }
 
     private void ejecutarCiclo(SimulacionSesionEstado estado) {
         if (!estado.estaActiva()) {
@@ -167,8 +260,17 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     ciclo, SimulacionSesionEstado.MAX_CICLOS,
                     estado.getSessionId(), desde, hasta);
 
-            Map<String, Object> resultado =
-                    simulacionService.procesarVentanaSC(desde, hasta, estado.getMaxMaletasSC());
+            // Presupuesto ALNS: la 1ra ventana corta (el usuario espera el arranque);
+            // las siguientes usan la holgura que da el prefetch para optimizar a fondo
+            long presupuestoMs = (ciclo == 1) ? 10_000 : 45_000;
+
+            Map<String, Object> resultado = simulacionService.procesarVentanaSC(
+                    desde, hasta, estado.getMaxMaletasSC(), estado.getArrastreIds(), presupuestoMs);
+
+            // Arrastre: los no asignados de esta ventana se reintentan en la siguiente
+            @SuppressWarnings("unchecked")
+            List<Integer> pendientes = (List<Integer>) resultado.getOrDefault("pendientesIds", List.of());
+            estado.setArrastreIds(new ArrayList<>(pendientes));
 
             Map<String, Object> update = new LinkedHashMap<>();
             update.put("type",               "UPDATE");
@@ -179,10 +281,41 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             update.put("estadisticas", Map.of(
                     "asignados",        resultado.get("asignados"),
                     "noAsignados",      resultado.get("noAsignados"),
+                    "enArrastre",       pendientes.size(),
                     "ciclosCompletados", ciclo,
                     "ciclosTotales",    SimulacionSesionEstado.MAX_CICLOS
             ));
             enviar(estado.getWsSession(), update);
+
+            // Modo colapso — definición del curso: colapsa cuando alguna maleta queda
+            // SIN RUTA asignable o alguna maleta llega FUERA DE SU SLA (atrasada)
+            if (estado.isModoColapso()) {
+                long asignados   = ((Number) resultado.get("asignados")).longValue();
+                long sinRuta     = ((Number) resultado.get("noAsignados")).longValue();
+                long fueraSla    = ((Number) resultado.getOrDefault("violacionesSla", 0)).longValue();
+                if (sinRuta > 0 || fueraSla > 0) {
+                    long total = asignados + sinRuta;
+                    double pct = total > 0 ? sinRuta * 100.0 / total : 0.0;
+                    long duracionMin = java.time.Duration
+                            .between(estado.getFechaInicio(), hasta).toMinutes();
+                    String motivo = (sinRuta > 0 ? sinRuta + " maleta(s) sin ruta posible" : "")
+                            + (sinRuta > 0 && fueraSla > 0 ? " · " : "")
+                            + (fueraSla > 0 ? fueraSla + " maleta(s) fuera de SLA" : "");
+                    enviar(estado.getWsSession(), Map.of(
+                            "type",               "COLAPSO_DETECTADO",
+                            "tiempoColapsoMs",    hasta.toInstant(ZoneOffset.UTC).toEpochMilli(),
+                            "duracionSimMinutos", duracionMin,
+                            "pctNoAsignados",     Math.round(pct),
+                            "maletasSinRuta",     sinRuta,
+                            "maletasFueraSla",    fueraSla,
+                            "motivo",             motivo));
+                    enviar(estado.getWsSession(), Map.of(
+                            "type",              "FIN",
+                            "ciclosCompletados", ciclo));
+                    detenerSesion(estado.getSessionId());
+                    return;
+                }
+            }
 
             if (ciclo >= SimulacionSesionEstado.MAX_CICLOS) {
                 enviar(estado.getWsSession(), Map.of(
