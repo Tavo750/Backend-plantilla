@@ -32,30 +32,73 @@ public class ColapsoEstimadorService {
 
     private static final Logger log = LoggerFactory.getLogger(ColapsoEstimadorService.class);
 
-    /** Versión del criterio de colapso: si cambia, la caché previa se ignora
-     *  (V3 = enrutador con exploración por llegada temprana y preferencia SLA) */
-    private static final String CRITERIO = "SLA_O_SIN_RUTA_V3";
+    /** Versión del criterio de colapso: si cambia, la caché previa se ignora.
+     *  V6 = simulación CONTINUA con ocupación de almacenes; colapso = primer
+     *  aeropuerto que llega a su capacidad (ya no puede recibir más pedidos);
+     *  ALNS como solver. */
+    private static final String CRITERIO = "COLAPSO_ALMACEN_V6";
 
-    /** Tope de días a examinar (protección: ~2 años de datos) */
-    private static final int MAX_DIAS_BUSQUEDA = 800;
+    /** Arranque de la simulación continua. 2026 está provadamente por debajo del
+     *  tope de cualquier almacén (pico de demanda 18,915/día → hubs chicos ~65%
+     *  de capacidad), y enero 2027 (~13k/día) también. Arrancar en 2027-01-01 da
+     *  warm-up amplio y captura el PRIMER cruce real sin regresión de fecha. */
+    private static final LocalDate INICIO_SIMULACION = LocalDate.of(2027, 1, 1);
 
     private final JdbcTemplate jdbcTemplate;
     private final ColapsoCacheRepository cacheRepository;
     private final SimulacionPureService simulacionPureService;
+    private final ColapsoContinuoService colapsoContinuoService;
 
     /** Marcador en BD para el resultado "no hay colapso en los datos" */
     private static final String SIN_COLAPSO = "SIN_COLAPSO";
 
     private volatile LocalDateTime fechaColapsoMemoria;
-    private volatile boolean sinColapsoConfirmado = false;
+    /** Huella de la data (conteo de envios) con la que se calculó fechaColapsoMemoria */
+    private volatile Long fingerprintMemoria;
+    /** true si el resultado en memoria es "sin colapso" (para distinguir de "no calculado") */
+    private volatile boolean sinColapsoMemoria = false;
 
-    /** true si ya existe un resultado cacheado con el criterio vigente (incluye "sin colapso") */
+    /** Memo de la huella con TTL corto: hayCache() y obtenerFechaColapso() se
+     *  llaman seguidas en un mismo clic; evita hacer el COUNT(*) dos veces. */
+    private volatile long fingerprintCacheVal = -1L;
+    private volatile long fingerprintCacheAtMs = 0L;
+    private static final long FINGERPRINT_TTL_MS = 15_000;
+
+    /**
+     * Huella de la data actual: MAX(id_envio) de envio_maletas. Se calcula por el
+     * índice de clave primaria, así que es instantáneo (a diferencia de COUNT(*),
+     * que sobre 10M filas y por el túnel SSH tardaba varios segundos ANTES de
+     * cualquier mensaje al cliente). Cualquier recarga/ampliación de la data
+     * inserta filas con ids nuevos y sube el máximo → la caché se invalida y se
+     * re-busca desde el inicio, evitando reportar una fecha calculada con data vieja.
+     */
+    private long fingerprintActual() {
+        long ahora = System.currentTimeMillis();
+        if (fingerprintCacheVal >= 0 && ahora - fingerprintCacheAtMs < FINGERPRINT_TTL_MS) {
+            return fingerprintCacheVal;
+        }
+        Long n = jdbcTemplate.queryForObject("SELECT COALESCE(MAX(id_envio), 0) FROM envio_maletas", Long.class);
+        fingerprintCacheVal = (n != null ? n : -1L);
+        fingerprintCacheAtMs = ahora;
+        return fingerprintCacheVal;
+    }
+
+    /** Devuelve la fila de caché vigente (criterio y huella de data coinciden), o null */
+    private ColapsoCache cacheVigente(long fingerprint) {
+        var c = cacheRepository.findTopByOrderByIdDesc().orElse(null);
+        if (c == null) return null;
+        if (!CRITERIO.equals(c.getCriterio())) return null;
+        if (c.getTotalEnvios() == null || c.getTotalEnvios() != fingerprint) return null;
+        return c;
+    }
+
+    /** true si ya existe un resultado cacheado VIGENTE (misma huella de data y criterio) */
     public boolean hayCache() {
-        if (fechaColapsoMemoria != null || sinColapsoConfirmado) return true;
         try {
-            return cacheRepository.findTopByOrderByIdDesc()
-                    .map(c -> CRITERIO.equals(c.getCriterio()))
-                    .orElse(false);
+            long fp = fingerprintActual();
+            if ((fechaColapsoMemoria != null || sinColapsoMemoria)
+                    && fingerprintMemoria != null && fingerprintMemoria == fp) return true;
+            return cacheVigente(fp) != null;
         } catch (Exception e) {
             return false;
         }
@@ -72,61 +115,61 @@ public class ColapsoEstimadorService {
      * @param progreso callback opcional para reportar avance al cliente
      */
     public synchronized LocalDateTime obtenerFechaColapso(Consumer<String> progreso) {
-        // 1. Caché en memoria (incluye el resultado "sin colapso")
-        if (fechaColapsoMemoria != null) return fechaColapsoMemoria;
-        if (sinColapsoConfirmado) return null;
+        long fingerprint = fingerprintActual();
 
-        // 2. Caché en BD (solo si fue calculada con el criterio vigente)
-        var enBd = cacheRepository.findTopByOrderByIdDesc();
-        if (enBd.isPresent() && CRITERIO.equals(enBd.get().getCriterio())) {
-            if (SIN_COLAPSO.equals(enBd.get().getDetalle())) {
-                sinColapsoConfirmado = true;
-                log.info("Caché BD: sin colapso en los datos ({})", CRITERIO);
-                return null;
-            }
-            fechaColapsoMemoria = enBd.get().getFechaColapsoEstimada();
-            log.info("Fecha de colapso recuperada de caché BD: {} ({})", fechaColapsoMemoria, CRITERIO);
-            return fechaColapsoMemoria;
+        // 1. Caché en memoria válida solo si la huella de data no cambió
+        if (fingerprintMemoria != null && fingerprintMemoria == fingerprint) {
+            if (fechaColapsoMemoria != null) return fechaColapsoMemoria;
+            if (sinColapsoMemoria) return null;
         }
 
-        // 3. Búsqueda cronológica con el planificador real (única vez)
-        LocalDate desde = consultarFecha("SELECT MIN(DATE(fecha_registro)) FROM envio_maletas");
-        LocalDate hasta = consultarFecha("SELECT MAX(DATE(fecha_registro)) FROM envio_maletas");
-        if (desde == null || hasta == null) {
+        LocalDate desdeDatos = consultarFecha("SELECT MIN(DATE(fecha_registro)) FROM envio_maletas");
+        LocalDate hastaDatos = consultarFecha("SELECT MAX(DATE(fecha_registro)) FROM envio_maletas");
+        if (desdeDatos == null || hastaDatos == null) {
             log.warn("envio_maletas vacío: no se puede buscar colapso");
             return null;
         }
 
+        // 2. Caché en BD válida solo si criterio Y huella de data coinciden
+        ColapsoCache c = cacheVigente(fingerprint);
+        if (c != null) {
+            if (SIN_COLAPSO.equals(c.getDetalle())) {
+                fingerprintMemoria = fingerprint; sinColapsoMemoria = true;
+                log.info("Caché BD vigente: sin colapso en la data actual ({} envios)", fingerprint);
+                return null;
+            }
+            fechaColapsoMemoria = c.getFechaColapsoEstimada();
+            fingerprintMemoria = fingerprint;
+            log.info("Fecha de colapso recuperada de caché BD: {} ({})", fechaColapsoMemoria, CRITERIO);
+            return fechaColapsoMemoria;
+        }
+
+        // 3. Simulación CONTINUA con ocupación de almacenes (data cambió o sin caché)
         Long capacidadDiaria = jdbcTemplate.queryForObject(
                 "SELECT COALESCE(SUM(capacidad), 0) FROM plan_vuelo_diario", Long.class);
 
-        log.info("Buscando fecha de colapso ({}) entre {} y {}...", CRITERIO, desde, hasta);
-        int examinados = 0;
-        for (LocalDate dia = desde; !dia.isAfter(hasta) && examinados < MAX_DIAS_BUSQUEDA; dia = dia.plusDays(1)) {
-            examinados++;
-            if (progreso != null && examinados % 5 == 1) {
-                progreso.accept("Evaluando planificación del " + dia + "...");
-            }
+        LocalDate inicio = INICIO_SIMULACION.isBefore(desdeDatos) ? desdeDatos : INICIO_SIMULACION;
+        log.info("Simulación continua de colapso ({}) desde {} hasta {} · {} envios...",
+                CRITERIO, inicio, hastaDatos, fingerprint);
 
-            SimulacionPureService.ChequeoDia chequeo = simulacionPureService.chequearDia(dia);
-            if (chequeo.hayViolacion()) {
-                String detalle = chequeo.sinRuta() + " sin ruta · " + chequeo.fueraSla() + " fuera de SLA";
-                log.info("Colapso encontrado el {}: {}", dia, detalle);
-                guardarCache(dia.atStartOfDay(), capacidadDiaria, detalle);
-                return fechaColapsoMemoria;
-            }
+        ColapsoContinuoService.Resultado res = colapsoContinuoService.buscar(inicio, hastaDatos, progreso);
+        if (res != null) {
+            log.info("Colapso encontrado el {}: {}", res.fecha(), res.motivo());
+            guardarCache(res.fecha().atStartOfDay(), capacidadDiaria, res.motivo(), fingerprint);
+            fingerprintMemoria = fingerprint;
+            return fechaColapsoMemoria;
         }
 
-        log.info("Sin colapso en los datos: el planificador cubre todos los días sin violaciones");
-        // Cachear también el "sin colapso": la búsqueda es cara y no debe repetirse
-        sinColapsoConfirmado = true;
+        log.info("Sin colapso: la simulación continua no satura almacenes ni viola SLA en [{} → {}]", inicio, hastaDatos);
+        fingerprintMemoria = fingerprint; sinColapsoMemoria = true;
         try {
             ColapsoCache cache = new ColapsoCache();
-            cache.setFechaColapsoEstimada(LocalDateTime.now());
+            cache.setFechaColapsoEstimada(hastaDatos.atStartOfDay());
             cache.setFechaCalculo(LocalDateTime.now());
             cache.setCapacidadDiaria(capacidadDiaria);
             cache.setCriterio(CRITERIO);
             cache.setDetalle(SIN_COLAPSO);
+            cache.setTotalEnvios(fingerprint);
             cacheRepository.save(cache);
         } catch (Exception e) {
             log.warn("No se pudo persistir 'sin colapso' (queda en memoria): {}", e.getMessage());
@@ -134,8 +177,9 @@ public class ColapsoEstimadorService {
         return null;
     }
 
-    private void guardarCache(LocalDateTime fecha, Long capacidadDiaria, String detalle) {
+    private void guardarCache(LocalDateTime fecha, Long capacidadDiaria, String detalle, long fingerprint) {
         fechaColapsoMemoria = fecha;
+        sinColapsoMemoria = false;
         try {
             ColapsoCache cache = new ColapsoCache();
             cache.setFechaColapsoEstimada(fecha);
@@ -143,6 +187,7 @@ public class ColapsoEstimadorService {
             cache.setCapacidadDiaria(capacidadDiaria);
             cache.setCriterio(CRITERIO);
             cache.setDetalle(detalle);
+            cache.setTotalEnvios(fingerprint);
             cacheRepository.save(cache);
         } catch (Exception e) {
             log.warn("No se pudo persistir la caché de colapso (queda en memoria): {}", e.getMessage());

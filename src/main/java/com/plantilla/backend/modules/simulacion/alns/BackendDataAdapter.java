@@ -153,6 +153,12 @@ public class BackendDataAdapter {
         String origen = e.getAeropuertoOrigen().getCodigoOaci();
         String destino = e.getAeropuertoDestino().getCodigoOaci();
 
+        // Envío con origen == destino: no es realista (la maleta ya está en su
+        // destino), no requiere vuelo y no debe entrar al problema de ruteo.
+        if (origen != null && origen.equals(destino)) {
+            return null;
+        }
+
         Aeropuerto aeroOrigen = aeropuertos.get(origen);
         Aeropuerto aeroDestino = aeropuertos.get(destino);
         if (aeroOrigen == null || aeroDestino == null) {

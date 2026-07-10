@@ -21,14 +21,25 @@ import java.util.concurrent.*;
  *
  * Protocolo cliente → servidor:
  *   {"type":"START","fechaInicio":"2026-06-19","horaInicio":"09:00","K":120,"maxMaletasSC":1500}
+ *   {"type":"LISTAR"}                 — pide la lista de simulaciones compartidas activas
+ *   {"type":"JOIN","simId":"ab12cd34"} — se une a una simulación en curso
  *   {"type":"STOP"}
  *
  * Protocolo servidor → cliente:
- *   INIT    — snapshot inicial (aviones en vuelo, aeropuertos)
- *   UPDATE  — resultado de cada ciclo ALNS (cada 5 min reales)
- *   FIN     — simulación terminada (12 ciclos = 60 min reales = 5 días simulados)
- *   ERROR   — error irrecuperable
- *   STOPPED — confirmación de STOP
+ *   INIT      — snapshot inicial (aviones en vuelo, aeropuertos)
+ *   UPDATE    — resultado de cada ciclo ALNS (cada 5 min reales)
+ *   LISTA_SIMS— lista de simulaciones compartidas activas
+ *   SYNC      — al unirse: instante real transcurrido para alinear el reloj con el líder
+ *   FIN       — simulación terminada (12 ciclos = 60 min reales = 5 días simulados)
+ *   ERROR     — error irrecuperable
+ *   STOPPED   — confirmación de STOP
+ *
+ * Simulación COMPARTIDA (multi-dispositivo):
+ *   Un START crea una simulación pública con un simId. Cada mensaje emitido se
+ *   guarda en un búfer y se difunde a todas las sesiones suscritas. Otro dispositivo
+ *   puede LISTAR y hacer JOIN: recibe el búfer completo (reconstruye el estado) y un
+ *   SYNC que lo alinea al mismo instante que ve el líder. La interacción (pan/zoom/
+ *   filtros/reloj local) es independiente en cada dispositivo.
  */
 @Component
 @RequiredArgsConstructor
@@ -38,14 +49,24 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
 
     /** Tamaño de ventana por ciclo ALNS en segundos reales de reproducción (= K×5 min sim con K=120 → 10 hs sim) */
     private static final int CICLO_REAL_SEG    = 300;
-    /** Ventanas que el productor mantiene planificadas POR DELANTE del reloj de pantalla (prefetch acotado) */
-    private static final int PREFETCH_VENTANAS = 2;
-    /** Frecuencia con la que el productor revisa si el búfer necesita otra ventana */
+    /** Sa: separación entre arranques de ciclos del planificador (3 min reales). */
+    private static final int SA_SEG            = 180;
+    /** Ráfaga inicial: ventanas planificadas de corrido al arrancar (colchón) */
+    private static final int RAFAGA_INICIAL    = 2;
+    /** Frecuencia con la que el productor revisa si toca arrancar otro ciclo */
     private static final int CHECK_BUFER_SEG   = 10;
     private static final int K_DEFAULT         = 120;
     private static final int SC_DEFAULT        = 5000;
+    /** Tras terminar, la simulación compartida se retiene este tiempo para joiners tardíos */
+    private static final long RETENCION_FIN_MS = 15 * 60 * 1000L;
 
+    /** Sesiones NO compartidas ligadas a su propietario (p.ej. simulación de colapso) */
     private final Map<String, SimulacionSesionEstado> sesiones = new ConcurrentHashMap<>();
+    /** Simulaciones compartidas activas, por simId */
+    private final Map<String, SimulacionSesionEstado> simsCompartidas = new ConcurrentHashMap<>();
+    /** sessionId → simId de la simulación que esa sesión está viendo (para desuscribir al cerrar) */
+    private final Map<String, String> sesionASim = new ConcurrentHashMap<>();
+
     private final ScheduledExecutorService scheduler =
             Executors.newScheduledThreadPool(4, r -> {
                 Thread t = new Thread(r, "sim-worker");
@@ -68,7 +89,20 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        detenerSesion(session.getId());
+        // Desuscribir de la simulación compartida que estuviera viendo (no la detiene:
+        // sigue viva para los demás dispositivos y para quien se una después).
+        String simId = sesionASim.remove(session.getId());
+        if (simId != null) {
+            SimulacionSesionEstado sim = simsCompartidas.get(simId);
+            if (sim != null) sim.getSuscriptores().remove(session);
+        }
+        // Simulaciones NO compartidas (colapso) mueren con su sesión.
+        SimulacionSesionEstado propia = sesiones.get(session.getId());
+        if (propia != null && propia.getSimId() == null) {
+            detenerSesion(session.getId());
+        } else {
+            sesiones.remove(session.getId());
+        }
         log.info("SimulacionWS desconectado: {} ({})", session.getId(), status.getCode());
     }
 
@@ -83,8 +117,18 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                 manejarStart(session, msg);
             } else if ("START_COLAPSO".equals(type)) {
                 manejarStartColapso(session, msg);
+            } else if ("LISTAR".equals(type)) {
+                enviar(session, Map.of("type", "LISTA_SIMS", "sims", snapshotActivas()));
+            } else if ("JOIN".equals(type)) {
+                manejarJoin(session, (String) msg.get("simId"));
             } else if ("STOP".equals(type)) {
-                detenerSesion(session.getId());
+                String sid = sesionASim.remove(session.getId());
+                if (sid != null) {
+                    SimulacionSesionEstado sim = simsCompartidas.get(sid);
+                    if (sim != null) sim.getSuscriptores().remove(session);
+                }
+                SimulacionSesionEstado propia = sesiones.get(session.getId());
+                if (propia != null && propia.getSimId() == null) detenerSesion(session.getId());
                 enviar(session, Map.of("type", "STOPPED"));
             }
         } catch (Exception e) {
@@ -93,11 +137,12 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     }
 
     // ──────────────────────────────────────────────────────────
-    // Inicio de simulación
+    // Inicio de simulación (compartida)
     // ──────────────────────────────────────────────────────────
 
     private void manejarStart(WebSocketSession session, Map<String, Object> msg) {
-        detenerSesion(session.getId());
+        // Si esta sesión ya estaba viendo/ejecutando algo, la despega.
+        desuscribir(session);
 
         String fechaInicioStr = (String) msg.getOrDefault("fechaInicio", "2026-01-02");
         String horaInicioStr  = (String) msg.getOrDefault("horaInicio",  "00:00");
@@ -109,8 +154,16 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
         LocalDateTime fechaInicio = LocalDateTime.parse(
                 fechaInicioStr + "T" + horaInicioStr + ":00");
 
+        String simId = UUID.randomUUID().toString().substring(0, 8);
+
         SimulacionSesionEstado estado = new SimulacionSesionEstado(
                 session.getId(), session, fechaInicio, K, maxMaletasSC);
+        estado.setSimId(simId);
+        estado.setHoraInicio(horaInicioStr);
+        estado.getSuscriptores().add(session);
+
+        simsCompartidas.put(simId, estado);
+        sesionASim.put(session.getId(), simId);
         sesiones.put(session.getId(), estado);
 
         // Ejecutar async para no bloquear el hilo del WS
@@ -118,14 +171,86 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     }
 
     // ──────────────────────────────────────────────────────────
-    // Simulación de colapso
+    // Unirse a una simulación en curso
     // ──────────────────────────────────────────────────────────
 
-    /**
-     * Busca la fecha estimada de colapso (cacheada: solo se calcula la primera vez)
-     * y lanza una simulación de confirmación desde 1 día antes de esa fecha.
-     */
+    private void manejarJoin(WebSocketSession session, String simId) {
+        if (simId == null) {
+            enviar(session, Map.of("type", "ERROR", "mensaje", "Falta el identificador de la simulación."));
+            return;
+        }
+        SimulacionSesionEstado sim = simsCompartidas.get(simId);
+        if (sim == null) {
+            enviar(session, Map.of("type", "ERROR", "mensaje", "La simulación ya no está disponible."));
+            return;
+        }
+        desuscribir(session);
+        sim.getSuscriptores().add(session);
+        sesionASim.put(session.getId(), simId);
+
+        // 1. Reproducir el búfer (INIT + UPDATEs [+ FIN]) para reconstruir el estado
+        List<String> copia;
+        synchronized (sim.getMensajesBuffer()) {
+            copia = new ArrayList<>(sim.getMensajesBuffer());
+        }
+        for (String json : copia) enviarRaw(session, json);
+
+        // 2. Sincronizar el reloj al mismo instante que ve el líder
+        long transcurridoRealMs = System.currentTimeMillis() - sim.getInicioRealMs();
+        enviar(session, Map.of(
+                "type",               "SYNC",
+                "transcurridoRealMs", transcurridoRealMs,
+                "finalizada",         sim.isFinalizada()));
+
+        log.info("Sesion {} se unió a simulacion {} (buffer={} msgs)",
+                session.getId(), simId, copia.size());
+    }
+
+    /** Lista de simulaciones compartidas para el endpoint REST y el mensaje LISTA_SIMS. */
+    public List<Map<String, Object>> listarActivas() {
+        return snapshotActivas();
+    }
+
+    private List<Map<String, Object>> snapshotActivas() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        // Defensivo: un fallo puntual en una simulación no debe tumbar toda la lista
+        for (SimulacionSesionEstado e : simsCompartidas.values()) {
+            try {
+                if (e == null) continue;
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("simId",        e.getSimId());
+                m.put("fechaInicio",  e.getFechaInicio() != null ? e.getFechaInicio().toLocalDate().toString() : "");
+                m.put("horaInicio",   e.getHoraInicio() != null ? e.getHoraInicio() : "00:00");
+                m.put("cicloActual",  e.getCiclosEjecutados());
+                m.put("maxCiclos",    SimulacionSesionEstado.MAX_CICLOS);
+                m.put("finalizada",   e.isFinalizada());
+                m.put("espectadores", e.getSuscriptores() != null ? e.getSuscriptores().size() : 0);
+                out.add(m);
+            } catch (Exception ex) {
+                log.warn("No se pudo serializar una simulación activa: {}", ex.getMessage());
+            }
+        }
+        return out;
+    }
+
+    private void desuscribir(WebSocketSession session) {
+        String simIdPrevio = sesionASim.remove(session.getId());
+        if (simIdPrevio != null) {
+            SimulacionSesionEstado sim = simsCompartidas.get(simIdPrevio);
+            if (sim != null) sim.getSuscriptores().remove(session);
+        }
+        SimulacionSesionEstado propia = sesiones.get(session.getId());
+        if (propia != null && propia.getSimId() == null) {
+            detenerSesion(session.getId());
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // Simulación de colapso (NO compartida)
+    // ──────────────────────────────────────────────────────────
+
     private void manejarStartColapso(WebSocketSession session, Map<String, Object> msg) {
+        desuscribir(session);
         detenerSesion(session.getId());
 
         int K = msg.containsKey("K")
@@ -154,6 +279,7 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                 SimulacionSesionEstado estado = new SimulacionSesionEstado(
                         session.getId(), session, inicioSim, K, maxMaletasSC);
                 estado.setModoColapso(true);
+                estado.getSuscriptores().add(session);
                 sesiones.put(session.getId(), estado);
 
                 enviar(session, Map.of(
@@ -176,7 +302,7 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
 
     private void iniciarSimulacion(SimulacionSesionEstado estado) {
         try {
-            // 1. Enviar snapshot inicial (aviones en vuelo, aeropuertos vacíos)
+            // 1. Snapshot inicial: aviones YA en vuelo a la fecha/hora elegida (vacíos) + aeropuertos
             Map<String, Object> snapshot =
                     simulacionService.construirSnapshotInicial(estado.getFechaInicio());
 
@@ -187,15 +313,12 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             initMsg.put("K",             estado.getK());
             initMsg.put("vuelosEnAire",  snapshot.get("vuelosEnAire"));
             initMsg.put("aeropuertos",   snapshot.get("aeropuertos"));
-            enviar(estado.getWsSession(), initMsg);
 
-            // 2. Productor con prefetch acotado: mantiene siempre PREFETCH_VENTANAS
-            //    ventanas planificadas por delante del reloj de pantalla del cliente.
-            //    El reloj de pantalla es determinista (avanza K× el tiempo real desde INIT),
-            //    así que se calcula aquí sin necesidad de feedback del cliente.
-            //    A diferencia del schedule fijo anterior, el tiempo de cómputo del ALNS
-            //    no acumula deriva: si un ciclo tarda, el productor se pone al día solo.
+            // Ancla del reloj ANTES de emitir INIT: así los joiners calculan bien el desfase
             estado.setInicioRealMs(System.currentTimeMillis());
+            emitir(estado, initMsg);
+
+            // 2. Productor con cadencia Sa = 3 min (ráfaga inicial + 1 ciclo cada SA_SEG)
             ScheduledFuture<?> tarea = scheduler.scheduleWithFixedDelay(
                     () -> productorTick(estado),
                     0,
@@ -205,9 +328,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
 
         } catch (Exception e) {
             log.error("Error iniciando simulacion WS: {}", e.getMessage(), e);
-            enviar(estado.getWsSession(),
-                    Map.of("type", "ERROR", "mensaje", e.getMessage()));
-            sesiones.remove(estado.getSessionId());
+            emitir(estado, Map.of("type", "ERROR", "mensaje", e.getMessage()));
+            finalizarSim(estado, true);
         }
     }
 
@@ -215,59 +337,53 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     // Ciclos ALNS
     // ──────────────────────────────────────────────────────────
 
-    /**
-     * Tick del productor: calcula la posición actual del reloj de pantalla y ejecuta
-     * tantos ciclos ALNS como haga falta para que el búfer de datos planificados
-     * quede PREFETCH_VENTANAS ventanas por delante. Se auto-detiene al llegar a
-     * MAX_CICLOS (FIN lo emite ejecutarCiclo) o si la sesión fue detenida.
-     */
     private void productorTick(SimulacionSesionEstado estado) {
         if (!estado.estaActiva()) {
-            detenerSesion(estado.getSessionId());
+            finalizarSim(estado, false);
             return;
         }
         synchronized (estado) {
-            long ventanaSimMin   = (long) estado.getK() * CICLO_REAL_SEG / 60;
             long transcurridoSeg = (System.currentTimeMillis() - estado.getInicioRealMs()) / 1000;
-            LocalDateTime relojPantalla    = estado.getFechaInicio().plusSeconds(transcurridoSeg * estado.getK());
-            LocalDateTime limiteProduccion = relojPantalla.plusMinutes(ventanaSimMin * PREFETCH_VENTANAS);
+            int objetivo = (int) Math.min(SimulacionSesionEstado.MAX_CICLOS,
+                    RAFAGA_INICIAL + transcurridoSeg / SA_SEG);
 
             while (estado.estaActiva()
-                    && sesiones.containsKey(estado.getSessionId())
-                    && estado.getPunteroSim().isBefore(limiteProduccion)) {
+                    && estaRegistrada(estado)
+                    && estado.getCiclosEjecutados() < objetivo) {
                 ejecutarCiclo(estado);
             }
         }
     }
 
+    private boolean estaRegistrada(SimulacionSesionEstado estado) {
+        return estado.getSimId() != null
+                ? simsCompartidas.containsKey(estado.getSimId())
+                : sesiones.containsKey(estado.getSessionId());
+    }
+
     private void ejecutarCiclo(SimulacionSesionEstado estado) {
         if (!estado.estaActiva()) {
-            detenerSesion(estado.getSessionId());
+            finalizarSim(estado, false);
             return;
         }
         try {
             int ciclo = estado.incrementarCiclo();
 
-            // Cada ciclo avanza K × CICLO_REAL_SEG segundos en simulación
-            // Con K=120 y CICLO_REAL_SEG=300: 120 × 300 / 60 = 600 min sim = 10 hs sim
             long cicloSimMinutos = (long) estado.getK() * CICLO_REAL_SEG / 60;
 
             LocalDateTime desde = estado.getPunteroSim();
             LocalDateTime hasta = desde.plusMinutes(cicloSimMinutos);
             estado.setPunteroSim(hasta);
 
-            log.info("Sim ciclo {}/{} | sesion={} | [{} → {}]",
+            log.info("Sim ciclo {}/{} | sim={} | [{} → {}]",
                     ciclo, SimulacionSesionEstado.MAX_CICLOS,
-                    estado.getSessionId(), desde, hasta);
+                    estado.getSimId() != null ? estado.getSimId() : estado.getSessionId(), desde, hasta);
 
-            // Presupuesto ALNS: la 1ra ventana corta (el usuario espera el arranque);
-            // las siguientes usan la holgura que da el prefetch para optimizar a fondo
             long presupuestoMs = (ciclo == 1) ? 10_000 : 45_000;
 
             Map<String, Object> resultado = simulacionService.procesarVentanaSC(
                     desde, hasta, estado.getMaxMaletasSC(), estado.getArrastreIds(), presupuestoMs);
 
-            // Arrastre: los no asignados de esta ventana se reintentan en la siguiente
             @SuppressWarnings("unchecked")
             List<Integer> pendientes = (List<Integer>) resultado.getOrDefault("pendientesIds", List.of());
             estado.setArrastreIds(new ArrayList<>(pendientes));
@@ -285,10 +401,9 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     "ciclosCompletados", ciclo,
                     "ciclosTotales",    SimulacionSesionEstado.MAX_CICLOS
             ));
-            enviar(estado.getWsSession(), update);
+            emitir(estado, update);
 
-            // Modo colapso — definición del curso: colapsa cuando alguna maleta queda
-            // SIN RUTA asignable o alguna maleta llega FUERA DE SU SLA (atrasada)
+            // Modo colapso — colapsa si alguna maleta queda SIN RUTA o llega FUERA DE SLA
             if (estado.isModoColapso()) {
                 long asignados   = ((Number) resultado.get("asignados")).longValue();
                 long sinRuta     = ((Number) resultado.get("noAsignados")).longValue();
@@ -301,7 +416,7 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     String motivo = (sinRuta > 0 ? sinRuta + " maleta(s) sin ruta posible" : "")
                             + (sinRuta > 0 && fueraSla > 0 ? " · " : "")
                             + (fueraSla > 0 ? fueraSla + " maleta(s) fuera de SLA" : "");
-                    enviar(estado.getWsSession(), Map.of(
+                    emitir(estado, Map.of(
                             "type",               "COLAPSO_DETECTADO",
                             "tiempoColapsoMs",    hasta.toInstant(ZoneOffset.UTC).toEpochMilli(),
                             "duracionSimMinutos", duracionMin,
@@ -309,32 +424,44 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                             "maletasSinRuta",     sinRuta,
                             "maletasFueraSla",    fueraSla,
                             "motivo",             motivo));
-                    enviar(estado.getWsSession(), Map.of(
-                            "type",              "FIN",
-                            "ciclosCompletados", ciclo));
-                    detenerSesion(estado.getSessionId());
+                    emitir(estado, Map.of("type", "FIN", "ciclosCompletados", ciclo));
+                    finalizarSim(estado, false);
                     return;
                 }
             }
 
             if (ciclo >= SimulacionSesionEstado.MAX_CICLOS) {
-                enviar(estado.getWsSession(), Map.of(
-                        "type",              "FIN",
-                        "ciclosCompletados", SimulacionSesionEstado.MAX_CICLOS));
-                detenerSesion(estado.getSessionId());
+                emitir(estado, Map.of("type", "FIN", "ciclosCompletados", SimulacionSesionEstado.MAX_CICLOS));
+                finalizarSim(estado, false);
             }
 
         } catch (Exception e) {
             log.error("Error en ciclo simulacion: {}", e.getMessage(), e);
-            enviar(estado.getWsSession(),
-                    Map.of("type", "ERROR", "mensaje", e.getMessage()));
-            detenerSesion(estado.getSessionId());
+            emitir(estado, Map.of("type", "ERROR", "mensaje", e.getMessage()));
+            finalizarSim(estado, true);
         }
     }
 
     // ──────────────────────────────────────────────────────────
     // Utilidades
     // ──────────────────────────────────────────────────────────
+
+    /** Termina la simulación. Si es compartida, la retiene un rato para joiners tardíos
+     *  (salvo {@code inmediato}=true, p.ej. tras un error irrecuperable). */
+    private void finalizarSim(SimulacionSesionEstado estado, boolean inmediato) {
+        estado.setFinalizada(true);
+        if (estado.getTareaScheduled() != null) estado.getTareaScheduled().cancel(false);
+        sesiones.remove(estado.getSessionId());
+        String simId = estado.getSimId();
+        if (simId != null) {
+            if (inmediato) {
+                simsCompartidas.remove(simId);
+            } else {
+                scheduler.schedule(() -> simsCompartidas.remove(simId),
+                        RETENCION_FIN_MS, TimeUnit.MILLISECONDS);
+            }
+        }
+    }
 
     private void detenerSesion(String sessionId) {
         SimulacionSesionEstado estado = sesiones.remove(sessionId);
@@ -343,12 +470,37 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    private void enviar(WebSocketSession session, Object payload) {
+    /** Serializa el mensaje una vez, lo guarda en el búfer y lo difunde a todos los suscriptores. */
+    private void emitir(SimulacionSesionEstado estado, Object payload) {
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(payload);
+        } catch (Exception e) {
+            log.warn("Error serializando mensaje WS simulacion: {}", e.getMessage());
+            return;
+        }
+        estado.getMensajesBuffer().add(json);
+        for (WebSocketSession s : estado.getSuscriptores()) {
+            enviarRaw(s, json);
+        }
+    }
+
+    private void enviarRaw(WebSocketSession session, String json) {
         if (session == null || !session.isOpen()) return;
         try {
             synchronized (session) {
-                session.sendMessage(new TextMessage(objectMapper.writeValueAsString(payload)));
+                session.sendMessage(new TextMessage(json));
             }
+        } catch (Exception e) {
+            log.warn("Error enviando mensaje WS simulacion [{}]: {}",
+                    session.getId(), e.getMessage());
+        }
+    }
+
+    private void enviar(WebSocketSession session, Object payload) {
+        if (session == null || !session.isOpen()) return;
+        try {
+            enviarRaw(session, objectMapper.writeValueAsString(payload));
         } catch (Exception e) {
             log.warn("Error enviando mensaje WS simulacion [{}]: {}",
                     session.getId(), e.getMessage());

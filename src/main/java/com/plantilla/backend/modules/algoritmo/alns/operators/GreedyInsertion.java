@@ -71,11 +71,14 @@ public class GreedyInsertion implements RepairOperator {
         long deadlineUTC = maleta.getSlaLimite();
         int cantidad = maleta.getCantidad();
 
-        // Exploración por llegada más temprana + poda de dominados: las rutas
-        // encontradas primero son las que llegan antes (mejor SLA)
+        // Exploración por llegada más temprana + poda de dominados por
+        // (aeropuerto, nº de escalas): no descartar una ruta directa-a-hub porque
+        // otra con más escalas llegó antes al mismo hub (la primera aún puede
+        // extenderse con más conexiones). Se busca hasta hallar una ruta SLA-ok.
         PriorityQueue<Ruta> cola = new PriorityQueue<>(
                 Comparator.comparingLong(Ruta::getHoraLlegadaFinal));
         Map<String, Long> mejorLlegadaPor = new HashMap<>();
+        boolean haySlaCompatible = false;
 
         List<Vuelo> vuelosIniciales = flightIndex.buscarVuelosDesdeHasta(
                 origen, despuesUTC, deadlineUTC, cantidad);
@@ -89,17 +92,19 @@ public class GreedyInsertion implements RepairOperator {
 
             if (vuelo.getDestino().equals(destino)) {
                 rutas.add(ruta);
-                if (rutas.size() >= 15) return rutas;
+                if (!maleta.isSLAExpirado(ruta.getHoraLlegadaFinal())) haySlaCompatible = true;
+                if (rutas.size() >= 25 && haySlaCompatible) return rutas;
             } else {
-                Long mejor = mejorLlegadaPor.get(vuelo.getDestino());
+                String clave = vuelo.getDestino() + "#1";
+                Long mejor = mejorLlegadaPor.get(clave);
                 if (mejor == null || vuelo.getHoraLlegada() < mejor) {
-                    mejorLlegadaPor.put(vuelo.getDestino(), vuelo.getHoraLlegada());
+                    mejorLlegadaPor.put(clave, vuelo.getHoraLlegada());
                     cola.add(ruta);
                 }
             }
         }
 
-        while (!cola.isEmpty() && rutas.size() < 15) {
+        while (!cola.isEmpty() && (rutas.size() < 25 || !haySlaCompatible)) {
             Ruta rutaActual = cola.poll();
             if (rutaActual.getNumeroVuelos() >= 3) continue;
 
@@ -126,11 +131,13 @@ public class GreedyInsertion implements RepairOperator {
 
                 if (siguienteVuelo.getDestino().equals(destino)) {
                     rutas.add(nuevaRuta);
-                    if (rutas.size() >= 15) return rutas;
+                    if (!maleta.isSLAExpirado(nuevaRuta.getHoraLlegadaFinal())) haySlaCompatible = true;
+                    if (rutas.size() >= 25 && haySlaCompatible) return rutas;
                 } else if (nuevaRuta.getNumeroVuelos() < 3) {
-                    Long mejor = mejorLlegadaPor.get(siguienteVuelo.getDestino());
+                    String clave = siguienteVuelo.getDestino() + "#" + nuevaRuta.getNumeroVuelos();
+                    Long mejor = mejorLlegadaPor.get(clave);
                     if (mejor == null || siguienteVuelo.getHoraLlegada() < mejor) {
-                        mejorLlegadaPor.put(siguienteVuelo.getDestino(), siguienteVuelo.getHoraLlegada());
+                        mejorLlegadaPor.put(clave, siguienteVuelo.getHoraLlegada());
                         cola.add(nuevaRuta);
                     }
                 }

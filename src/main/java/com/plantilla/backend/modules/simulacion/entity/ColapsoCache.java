@@ -42,4 +42,9 @@ public class ColapsoCache {
 
     @Column(name = "detalle", length = 200)
     private String detalle;
+
+    /** Huella de la data con la que se calculó: total de filas en envio_maletas.
+     *  Si el conteo actual difiere, la data cambió y la caché se invalida. */
+    @Column(name = "total_envios")
+    private Long totalEnvios;
 }

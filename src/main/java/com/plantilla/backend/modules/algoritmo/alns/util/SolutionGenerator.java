@@ -73,9 +73,12 @@ public class SolutionGenerator {
         // completadas son las que llegan antes → maximiza el cumplimiento de SLA
         PriorityQueue<Ruta> cola = new PriorityQueue<>(
                 Comparator.comparingLong(Ruta::getHoraLlegadaFinal));
-        // Poda de dominados: si ya llegamos a un aeropuerto más temprano, no
-        // vale la pena extender una ruta que llega más tarde al mismo punto
+        // Poda de dominados por (aeropuerto, nº de escalas): conservar solo la
+        // llegada más temprana a un hub PERO diferenciando por profundidad, para
+        // no descartar una ruta directa-a-hub (extensible con 1 escala más) solo
+        // porque una ruta con más escalas llegó antes al mismo hub.
         Map<String, Long> mejorLlegadaPor = new HashMap<>();
+        boolean haySlaCompatible = false;
 
         List<Vuelo> vuelosIniciales = flightIndex.buscarVuelosDesdeHasta(
                 origen, despuesUTC, deadlineUTC, cantidad);
@@ -89,16 +92,21 @@ public class SolutionGenerator {
 
             if (vuelo.getDestino().equals(destino)) {
                 rutasEncontradas.add(ruta);
+                if (!maleta.isSLAExpirado(ruta.getHoraLlegadaFinal())) haySlaCompatible = true;
             } else {
-                Long mejor = mejorLlegadaPor.get(vuelo.getDestino());
+                String clave = vuelo.getDestino() + "#1";
+                Long mejor = mejorLlegadaPor.get(clave);
                 if (mejor == null || vuelo.getHoraLlegada() < mejor) {
-                    mejorLlegadaPor.put(vuelo.getDestino(), vuelo.getHoraLlegada());
+                    mejorLlegadaPor.put(clave, vuelo.getHoraLlegada());
                     cola.add(ruta);
                 }
             }
         }
 
-        while (!cola.isEmpty() && rutasEncontradas.size() < 10) {
+        // Sigue buscando mientras no haya al menos una ruta SLA-compatible (hasta
+        // un tope amplio). Así una maleta que perdió su vuelo directo del día
+        // igual encuentra la conexión que llega a tiempo, si existe.
+        while (!cola.isEmpty() && (rutasEncontradas.size() < 25 || !haySlaCompatible)) {
             Ruta actual = cola.poll();
             if (actual.getNumeroVuelos() >= 3) continue;
 
@@ -125,11 +133,13 @@ public class SolutionGenerator {
 
                 if (siguiente.getDestino().equals(destino)) {
                     rutasEncontradas.add(nuevaRuta);
-                    if (rutasEncontradas.size() >= 10) break;
+                    if (!maleta.isSLAExpirado(nuevaRuta.getHoraLlegadaFinal())) haySlaCompatible = true;
+                    if (rutasEncontradas.size() >= 25 && haySlaCompatible) break;
                 } else if (nuevaRuta.getNumeroVuelos() < 3) {
-                    Long mejor = mejorLlegadaPor.get(siguiente.getDestino());
+                    String clave = siguiente.getDestino() + "#" + nuevaRuta.getNumeroVuelos();
+                    Long mejor = mejorLlegadaPor.get(clave);
                     if (mejor == null || siguiente.getHoraLlegada() < mejor) {
-                        mejorLlegadaPor.put(siguiente.getDestino(), siguiente.getHoraLlegada());
+                        mejorLlegadaPor.put(clave, siguiente.getHoraLlegada());
                         cola.add(nuevaRuta);
                     }
                 }

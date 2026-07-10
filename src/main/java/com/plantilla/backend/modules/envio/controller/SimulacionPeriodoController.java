@@ -42,6 +42,63 @@ public class SimulacionPeriodoController {
     private final AlnsSimulacionService alnsSimulacionService;
     private final ObjectMapper objectMapper;
     private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+    private final com.plantilla.backend.modules.simulacion.SimulacionPureService simulacionPureService;
+    private final com.plantilla.backend.modules.simulacion.service.ColapsoContinuoService colapsoContinuoService;
+    private final com.plantilla.backend.modules.simulacion.SimulacionWebSocketHandler simulacionWebSocketHandler;
+
+    @GetMapping("/activas")
+    @Operation(summary = "Simulaciones compartidas en ejecución",
+            description = "Lista las simulaciones compartidas activas para que otros dispositivos puedan unirse y ver lo mismo.")
+    public ResponseEntity<ApiResponse<java.util.List<Map<String, Object>>>> simulacionesActivas() {
+        java.util.List<Map<String, Object>> activas;
+        try {
+            activas = simulacionWebSocketHandler.listarActivas();
+        } catch (Exception e) {
+            // Nunca 500: la lista de simulaciones activas es informativa; si algo falla,
+            // se devuelve vacía y se registra la causa para diagnóstico.
+            log.error("Error listando simulaciones activas", e);
+            activas = java.util.Collections.emptyList();
+        }
+        return ResponseEntity.ok(ApiResponse.success(activas));
+    }
+
+    @GetMapping("/colapso/continuo")
+    @Operation(summary = "Diagnóstico: simulación continua de colapso sobre un rango",
+            description = "Simula día a día con ALNS acumulando ocupación de almacenes; reporta el primer colapso (almacén lleno o sin ruta/fuera de SLA) en el rango.")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> colapsoContinuo(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate desde,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate hasta) {
+        long t0 = System.currentTimeMillis();
+        var res = colapsoContinuoService.buscar(desde, hasta, null);
+        Map<String, Object> r = new java.util.LinkedHashMap<>();
+        r.put("desde", desde.toString());
+        r.put("hasta", hasta.toString());
+        if (res != null) {
+            r.put("hayColapso", true);
+            r.put("fecha", res.fecha().toString());
+            r.put("motivo", res.motivo());
+        } else {
+            r.put("hayColapso", false);
+        }
+        r.put("ms", System.currentTimeMillis() - t0);
+        return ResponseEntity.ok(ApiResponse.success(r));
+    }
+
+    @GetMapping("/colapso/chequear-dia")
+    @Operation(summary = "Diagnóstico: evalúa el colapso de un solo día",
+            description = "Corre el planificador sobre los envíos de la fecha dada y reporta cuántas maletas quedan sin ruta o fuera de SLA.")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> chequearDia(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fecha) {
+        long t0 = System.currentTimeMillis();
+        var chequeo = simulacionPureService.chequearDia(fecha);
+        Map<String, Object> r = new java.util.LinkedHashMap<>();
+        r.put("fecha", fecha.toString());
+        r.put("sinRuta", chequeo.sinRuta());
+        r.put("fueraSla", chequeo.fueraSla());
+        r.put("hayColapso", chequeo.hayViolacion());
+        r.put("ms", System.currentTimeMillis() - t0);
+        return ResponseEntity.ok(ApiResponse.success(r));
+    }
 
     @GetMapping("/rango-datos")
     @Operation(
@@ -52,12 +109,15 @@ public class SimulacionPeriodoController {
     public ResponseEntity<ApiResponse<Map<String, Object>>> rangoDatos() {
         Map<String, Object> rango = new java.util.LinkedHashMap<>();
         try {
-            java.sql.Date desde = jdbcTemplate.queryForObject(
-                    "SELECT MIN(DATE(fecha_registro)) FROM envio_maletas", java.sql.Date.class);
-            java.sql.Date hasta = jdbcTemplate.queryForObject(
-                    "SELECT MAX(DATE(fecha_registro)) FROM envio_maletas", java.sql.Date.class);
-            rango.put("desde", desde != null ? desde.toString() : null);
-            rango.put("hasta", hasta != null ? hasta.toString() : null);
+            // MIN/MAX sobre la columna cruda usan el índice idx_envio_fecha_registro
+            // (son instantáneos). Envolver en DATE() impedía usar el índice y forzaba
+            // un full scan de ~10M filas → la consulta tardaba >60 s por el túnel.
+            java.sql.Timestamp desde = jdbcTemplate.queryForObject(
+                    "SELECT MIN(fecha_registro) FROM envio_maletas", java.sql.Timestamp.class);
+            java.sql.Timestamp hasta = jdbcTemplate.queryForObject(
+                    "SELECT MAX(fecha_registro) FROM envio_maletas", java.sql.Timestamp.class);
+            rango.put("desde", desde != null ? desde.toLocalDateTime().toLocalDate().toString() : null);
+            rango.put("hasta", hasta != null ? hasta.toLocalDateTime().toLocalDate().toString() : null);
         } catch (Exception e) {
             rango.put("desde", null);
             rango.put("hasta", null);
