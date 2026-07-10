@@ -74,6 +74,7 @@ public class SimulacionPureService {
             m.put("destino",     v.getAeropuertoDestino().getCodigoOaci());
             m.put("horaSalidaMs",  v.getHoraSalida().toInstant(ZoneOffset.UTC).toEpochMilli());
             m.put("horaLlegadaMs", v.getHoraLlegada().toInstant(ZoneOffset.UTC).toEpochMilli());
+            m.put("capacidad",     v.getCapacidadMaxima() != null ? v.getCapacidadMaxima() : 0);
             m.put("totalMaletas", 0);
             m.put("envios", Collections.emptyList());
             return m;
@@ -232,6 +233,7 @@ public class SimulacionPureService {
                     vd.put("destino",      v.getDestino());
                     vd.put("horaSalidaMs",  salidaUtc.toInstant(ZoneOffset.UTC).toEpochMilli());
                     vd.put("horaLlegadaMs", llegadaUtc.toInstant(ZoneOffset.UTC).toEpochMilli());
+                    vd.put("capacidad",     v.getCapacidad());
                     vd.put("totalMaletas", 0);
                     vuelosMap.put(key, vd);
                     enviosPorVuelo.put(key, new ArrayList<>());
@@ -293,49 +295,67 @@ public class SimulacionPureService {
         public boolean hayViolacion() { return sinRuta > 0 || fueraSla > 0; }
     }
 
+    /** Plan de un día + el mapa de aeropuertos (con capacidad de almacén) usado */
+    public record PlanDia(PlanDeRutas plan, Map<String, Aeropuerto> aeropuertos) {}
+
     /**
-     * Evalúa si en un día calendario el planificador deja alguna maleta sin ruta
-     * o fuera de SLA (definición de colapso del curso). Primero prueba con la
-     * construcción greedy (rápida); solo si esta reporta violaciones ejecuta el
-     * ALNS completo para confirmar que ni el mejor plan puede evitarlas.
+     * Planifica los envíos registrados en un día con el ALNS (metaheurística como
+     * solver: el greedy solo siembra la solución inicial, el ALNS SIEMPRE se
+     * ejecuta para mejorarla). Devuelve el plan completo con sus asignaciones,
+     * para que el detector de colapso pueda medir ocupación de almacenes y SLA.
      */
     @Transactional
-    public ChequeoDia chequearDia(java.time.LocalDate dia) {
+    public PlanDia planificarDia(java.time.LocalDate dia) {
         LocalDateTime desde = dia.atStartOfDay();
         LocalDateTime hasta = desde.plusDays(1);
 
         Map<String, Aeropuerto> aeropuertosAlns = dataAdapter.cargarAeropuertos();
-        if (aeropuertosAlns.isEmpty()) return new ChequeoDia(0, 0);
+        if (aeropuertosAlns.isEmpty()) return new PlanDia(null, aeropuertosAlns);
 
         List<EnvioMaletas> envios =
                 envioMaletasRepository.findByFechaRegistroBetweenOrderByFechaRegistroAsc(desde, hasta);
-        if (envios.isEmpty()) return new ChequeoDia(0, 0);
+        if (envios.isEmpty()) return new PlanDia(null, aeropuertosAlns);
 
         List<Maleta> maletas = envios.stream()
                 .map(e -> dataAdapter.convertirEnvio(e, aeropuertosAlns))
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
-        if (maletas.isEmpty()) return new ChequeoDia(0, 0);
+        if (maletas.isEmpty()) return new PlanDia(null, aeropuertosAlns);
 
         List<com.plantilla.backend.modules.algoritmo.alns.model.Vuelo> vuelos =
                 dataAdapter.cargarVuelos(desde, hasta.plusDays(5));
-        if (vuelos.isEmpty()) return new ChequeoDia(maletas.size(), 0);
 
         FlightIndex flightIndex = dataAdapter.construirFlightIndex(vuelos);
         PlanDeRutas plan = SolutionGenerator.generarPlanInicial(maletas, flightIndex, aeropuertosAlns);
 
-        // Confirmación con ALNS solo si el greedy reporta violaciones (evita falsos positivos)
-        if (contarViolaciones(plan).hayViolacion() && plan.getTotalMaletasAsignadas() > 0) {
+        // El ALNS es el solver (requisito metaheurístico): siempre se ejecuta.
+        // Vecindarios pequeños (5-15%) → iteraciones dirigidas sobre días de
+        // decenas de miles de maletas.
+        if (plan.getTotalMaletasAsignadas() > 0) {
+            // Presupuesto acotado: la simulación continua corre cientos de días;
+            // el ALNS (metaheurística) refina la solución inicial y la ocupación
+            // de almacenes es un agregado poco sensible al ajuste fino.
             ALNSEngine engine = new ALNSEngine(
-                    MAX_ITERACIONES, REMOCION_MIN, REMOCION_MAX,
+                    50_000, 0.05, 0.15,
                     TEMPERATURA_INI, TASA_ENFRIAMIENTO, TASA_REACCION,
                     PERIODO_ACTUALIZ, flightIndex,
-                    15_000, 150);
+                    15_000, 600);
             plan = engine.ejecutar(plan);
         }
-        ChequeoDia chequeo = contarViolaciones(plan);
+        return new PlanDia(plan, aeropuertosAlns);
+    }
+
+    /**
+     * Chequeo de un día por las violaciones directas (sin ruta / fuera de SLA).
+     * Se conserva para el endpoint de diagnóstico por-día.
+     */
+    @Transactional
+    public ChequeoDia chequearDia(java.time.LocalDate dia) {
+        PlanDia pd = planificarDia(dia);
+        if (pd.plan() == null) return new ChequeoDia(0, 0);
+        ChequeoDia chequeo = contarViolaciones(pd.plan());
         if (chequeo.hayViolacion()) {
-            logDetalleViolaciones(plan, "chequearDia " + dia);
+            logDetalleViolaciones(pd.plan(), "chequearDia " + dia);
         }
         return chequeo;
     }
