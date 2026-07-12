@@ -88,4 +88,22 @@ public interface EnvioDiarioRepository extends JpaRepository<EnvioDiario, Intege
        List<EnvioDiario> findByAeropuertoOrigenOrDestino(
               @Param("idAeropuerto") Integer idAeropuerto
 );
+
+    /** Conta el número de envíos activos (EN_ESPERA + EN_TRANSITO). */
+    @Query("SELECT COUNT(e) FROM EnvioDiario e WHERE CAST(e.estado AS string) IN ('EN_ESPERA', 'EN_TRANSITO')")
+    long countByEstadosAsignados();
+
+    /** Suma total de maletas de envíos activos (EN_ESPERA + EN_TRANSITO). Returns null if no rows. */
+    @Query("SELECT SUM(e.cantidad) FROM EnvioDiario e WHERE CAST(e.estado AS string) IN ('EN_ESPERA', 'EN_TRANSITO')")
+    Long sumMaletasAsignadas();
+
+    /** Cuenta envíos en estado REGISTRADA (sin vuelo aún). */
+    @Query("SELECT COUNT(e) FROM EnvioDiario e WHERE CAST(e.estado AS string) = 'REGISTRADA'")
+    long countRegistradas();
+
+    /** Para monitoreo: maletas en tránsito (EN_TRANSITO) agrupadas por aeropuerto origen. */
+    @Query("SELECT e.aeropuertoOrigen.codigoOaci, SUM(e.cantidad) FROM EnvioDiario e " +
+           "WHERE CAST(e.estado AS string) = 'EN_TRANSITO' " +
+           "GROUP BY e.aeropuertoOrigen.codigoOaci")
+    List<Object[]> sumCantidadEnTransitoPorAeropuertoOrigen();
 }

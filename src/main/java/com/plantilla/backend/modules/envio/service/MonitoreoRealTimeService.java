@@ -167,6 +167,14 @@ public class MonitoreoRealTimeService {
             maletasPorAeropuerto.put(oaci, suma);
         }
 
+        // Maletas en tránsito (EN_TRANSITO) por aeropuerto DESTINO (envíos "saliendo" del origen)
+        Map<String, Integer> maletasSalenPorAeropuerto = new java.util.HashMap<>();
+        for (Object[] row : envioDiarioRepo.sumCantidadEnTransitoPorAeropuertoOrigen()) {
+            String oaci  = (String) row[0];
+            Integer suma = ((Number) row[1]).intValue();
+            maletasSalenPorAeropuerto.put(oaci, suma);
+        }
+
         // Maletas llegadas al destino en los últimos 15 minutos
         LocalDateTime quinceMinsAtras = LocalDateTime.now(LIMA).minusMinutes(15);
         Map<String, Integer> maletasLlegadasPorAeropuerto = new java.util.HashMap<>();
@@ -211,7 +219,14 @@ public class MonitoreoRealTimeService {
                 .map(v -> enrichVuelo(v, hoy, maletasPorVuelo))
                 .collect(Collectors.toList());
 
-        List<Map<String, Object>> almacenes = construirAlmacenes(maletasPorAeropuerto, maletasLlegadasPorAeropuerto);
+        List<Map<String, Object>> almacenes = construirAlmacenes(
+                maletasPorAeropuerto, maletasLlegadasPorAeropuerto, maletasSalenPorAeropuerto);
+
+        // Contadores reales desde BD (no dependen de acumulados en memoria)
+        long asignadosReal   = envioDiarioRepo.countByEstadosAsignados();
+        Long maletasRawVal   = envioDiarioRepo.sumMaletasAsignadas();
+        long maletasReal     = maletasRawVal != null ? maletasRawVal : 0L;
+        long noAsignadosReal = envioDiarioRepo.countRegistradas();
 
         // Indicadores reales de almacenes (promedio de ocupación)
         double pctAlmMedia = almacenes.stream()
@@ -241,9 +256,9 @@ public class MonitoreoRealTimeService {
         snapshot.put("K",                   1);
         snapshot.put("SA",                  5);
         snapshot.put("ciclo",               0);
-        snapshot.put("pedidosAsignados",    pedidosAsignados);
-        snapshot.put("pedidosNoAsignados",  pedidosNoAsignados);
-        snapshot.put("maletasFisicas",      maletasFisicas);
+        snapshot.put("pedidosAsignados",    (int) asignadosReal);
+        snapshot.put("pedidosNoAsignados",  (int) noAsignadosReal);
+        snapshot.put("maletasFisicas",      (int) maletasReal);
         snapshot.put("vuelos",              vuelos);
         snapshot.put("almacenesDetalle",    almacenes);
         snapshot.put("enviosDetalle",       enviosDetalle);
@@ -297,10 +312,12 @@ public class MonitoreoRealTimeService {
 
     private List<Map<String, Object>> construirAlmacenes(
             Map<String, Integer> maletasPorAeropuerto,
-            Map<String, Integer> maletasLlegadasPorAeropuerto) {
+            Map<String, Integer> maletasLlegadasPorAeropuerto,
+            Map<String, Integer> maletasSalenPorAeropuerto) {
         return aeropuertosPorOaci.values().stream().map(a -> {
             int enEspera        = maletasPorAeropuerto.getOrDefault(a.getCodigoOaci(), 0);
             int maletasLlegadas = maletasLlegadasPorAeropuerto.getOrDefault(a.getCodigoOaci(), 0);
+            int enviosSalen     = maletasSalenPorAeropuerto.getOrDefault(a.getCodigoOaci(), 0);
             int ocupacion       = enEspera + maletasLlegadas;
             int capacidad       = a.getCapacidad() != null ? a.getCapacidad() : 0;
             double pct          = capacidad > 0 ? (double) ocupacion / capacidad * 100.0 : 0.0;
@@ -315,6 +332,8 @@ public class MonitoreoRealTimeService {
             m.put("pct",             pct);
             m.put("semaforo",        semaforo);
             m.put("maletasLlegadas", maletasLlegadas);
+            m.put("enviosSalen",     enviosSalen);
+            m.put("enviosEntran",    maletasLlegadas); // llegadas recientes = entran al almacén destino
             return m;
         }).collect(Collectors.toList());
     }

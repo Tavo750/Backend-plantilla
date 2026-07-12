@@ -5,32 +5,44 @@ import com.plantilla.backend.modules.envio.entity.EnvioDiario;
 import com.plantilla.backend.modules.envio.repository.EnvioDiarioRepository;
 import com.plantilla.backend.modules.envio.service.EnvioDiarioService;
 import com.plantilla.backend.modules.envio.service.MonitoreoRealTimeService;
+import com.plantilla.backend.modules.envio.service.PlanificadorEnvioService;
 import com.plantilla.backend.modules.maestro.entity.Aeropuerto;
 import com.plantilla.backend.modules.maestro.repository.AerolineaRepository;
 import com.plantilla.backend.modules.maestro.repository.AeropuertoRepository;
 import com.plantilla.backend.modules.maestro.repository.PoliticaEntregaRepository;
-import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
-import org.springframework.http.HttpStatus;
-import org.springframework.web.server.ResponseStatusException;
 import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
-@RequiredArgsConstructor
 public class EnvioDiarioServiceImpl implements EnvioDiarioService {
 
     private final EnvioDiarioRepository envioDiarioRepository;
     private final AerolineaRepository aerolineaRepository;
     private final AeropuertoRepository aeropuertoRepository;
     private final PoliticaEntregaRepository politicaEntregaRepository;
-
-    @Lazy
     private final MonitoreoRealTimeService monitoreoRealTimeService;
+    private final PlanificadorEnvioService planificadorEnvioService;
+
+    public EnvioDiarioServiceImpl(
+            EnvioDiarioRepository envioDiarioRepository,
+            AerolineaRepository aerolineaRepository,
+            AeropuertoRepository aeropuertoRepository,
+            PoliticaEntregaRepository politicaEntregaRepository,
+            @Lazy MonitoreoRealTimeService monitoreoRealTimeService,
+            @Lazy PlanificadorEnvioService planificadorEnvioService) {
+        this.envioDiarioRepository      = envioDiarioRepository;
+        this.aerolineaRepository        = aerolineaRepository;
+        this.aeropuertoRepository       = aeropuertoRepository;
+        this.politicaEntregaRepository  = politicaEntregaRepository;
+        this.monitoreoRealTimeService   = monitoreoRealTimeService;
+        this.planificadorEnvioService   = planificadorEnvioService;
+    }
+
 
     @Override
     @Transactional(readOnly = true)
@@ -109,6 +121,16 @@ public class EnvioDiarioServiceImpl implements EnvioDiarioService {
         }
 
         EnvioDiario saved = envioDiarioRepository.save(envio);
+
+        // Disparar planificación inmediata en hilo separado para asignar vuelo al instante
+        // (sin esperar el ciclo automático de 5 minutos)
+        new Thread(() -> {
+            try {
+                planificadorEnvioService.planificar();
+            } catch (Exception ex) {
+                // log silencioso: la planificación programada es la red de seguridad
+            }
+        }, "planif-on-create").start();
 
         monitoreoRealTimeService.broadcastPlan();
 
