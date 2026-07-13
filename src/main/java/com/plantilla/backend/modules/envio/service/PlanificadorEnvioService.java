@@ -18,6 +18,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -33,6 +34,7 @@ import java.util.Comparator;
 public class PlanificadorEnvioService {
 
     private static final Logger log = LoggerFactory.getLogger(PlanificadorEnvioService.class);
+    private static final ZoneId LIMA = ZoneId.of("America/Lima");
 
     private final EnvioDiarioRepository envioDiarioRepo;
     private final PlanVueloDiarioRepository planVueloRepo;
@@ -53,7 +55,7 @@ public class PlanificadorEnvioService {
             return;
         }
 
-        LocalDateTime ahora = LocalDateTime.now();
+        LocalDateTime ahora = LocalDateTime.now(LIMA);
 
         // Capacidad ocupada por vuelo (id_plan_vuelo_asignado → total maletas ya asignadas)
         Map<Integer, Integer> capacidadUsada = new ConcurrentHashMap<>();
@@ -122,7 +124,7 @@ public class PlanificadorEnvioService {
     @Scheduled(fixedDelay = 60_000, initialDelay = 30_000)
     @Transactional
     public void actualizarEstadosPorLlegadaDeVuelo() {
-        LocalDateTime ahora = LocalDateTime.now();
+        LocalDateTime ahora = LocalDateTime.now(LIMA);
 
         // Incluir RETRASADA para que puedan transicionar a ENTREGADA cuando el vuelo aterrice
         List<EnvioDiario> enviosConVuelo = new ArrayList<>();
@@ -154,12 +156,14 @@ public class PlanificadorEnvioService {
             PlanVueloDiario vuelo = vuelosPorId.get(envio.getIdPlanVueloAsignado());
             if (vuelo == null) continue;
 
-            LocalDateTime fechaHoraSalida  = envio.getFechaHoraSalidaAsignada();
-            LocalDateTime fechaHoraLlegada = envio.getFechaHoraLlegadaAsignada();
+            // Recalcular siempre usando 'ahora' en Lima para evitar datos guardados
+            // con timezone incorrecto (servidor UTC vs horario Lima).
+            LocalDateTime fechaHoraSalida  = calcularFechaHoraSalida(ahora, vuelo.getHoraSalida());
+            LocalDateTime fechaHoraLlegada = calcularFechaHoraLlegada(fechaHoraSalida.toLocalDate(), vuelo);
 
-            if (fechaHoraSalida == null || fechaHoraLlegada == null) {
-                fechaHoraSalida  = calcularFechaHoraSalida(envio.getFechaRegistro(), vuelo.getHoraSalida());
-                fechaHoraLlegada = calcularFechaHoraLlegada(fechaHoraSalida.toLocalDate(), vuelo);
+            // Persistir si cambiaron (corrige datos previos con timezone erróneo)
+            if (!fechaHoraSalida.equals(envio.getFechaHoraSalidaAsignada())
+                    || !fechaHoraLlegada.equals(envio.getFechaHoraLlegadaAsignada())) {
                 envio.setFechaHoraSalidaAsignada(fechaHoraSalida);
                 envio.setFechaHoraLlegadaAsignada(fechaHoraLlegada);
             }
