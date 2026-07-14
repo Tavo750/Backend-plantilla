@@ -78,6 +78,9 @@ public class MonitoreoRealTimeService {
     // API pública
     // ════════════════════════════════════════════════════════════════════
 
+    // Contador de ticks para disparar snapshot periódico cada 60 s
+    private volatile int tickCount = 0;
+
     public synchronized Map<String, Object> activar() {
         if (activo.get()) return ultimoSnapshot;
 
@@ -132,6 +135,12 @@ public class MonitoreoRealTimeService {
             msg.put("pedidosNoAsignados", pedidosNoAsignados);
             msg.put("maletasFisicas",     maletasFisicas);
             ws.broadcast(msg);
+
+            // Cada 60 ticks (≈ 1 minuto) recalcula y difunde el snapshot completo
+            // para mantener estadoVuelo actualizado (EN_VUELO / LLEGÓ / POR_SALIR)
+            if (++tickCount % 60 == 0) {
+                broadcastSnapshot();
+            }
         } catch (Exception e) {
             log.warn("Error en tick RT: {}", e.getMessage());
         }

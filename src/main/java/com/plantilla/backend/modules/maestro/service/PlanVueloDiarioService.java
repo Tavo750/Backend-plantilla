@@ -23,13 +23,16 @@ public interface PlanVueloDiarioService {
     static String calcularEstado(LocalTime horaSalida, LocalTime horaLlegada) {
         LocalTime ahora = LocalTime.now(LIMA_ZONE);
         if (horaSalida.isBefore(horaLlegada)) {
-            if (!ahora.isBefore(horaSalida) && ahora.isBefore(horaLlegada)) return "EN_VUELO";
+            // Vuelo diurno (mismo día)
             if (ahora.isBefore(horaSalida)) return "POR_SALIR";
+            if (ahora.isBefore(horaLlegada)) return "EN_VUELO";
             return "LLEGÓ";
         } else {
-            // Vuelo nocturno (cruza medianoche)
-            if (!ahora.isBefore(horaSalida) || ahora.isBefore(horaLlegada)) return "EN_VUELO";
-            return "LLEGÓ";
+            // Vuelo nocturno (cruza medianoche): EN_VUELO si salió O si aún no llegó
+            if (!ahora.isBefore(horaSalida)) return "EN_VUELO"; // ya salió
+            if (ahora.isBefore(horaLlegada)) return "EN_VUELO"; // aún no llegó (madrugada)
+            // Entre horaLlegada y horaSalida → todavía no ha salido hoy
+            return "POR_SALIR";
         }
     }
 }
