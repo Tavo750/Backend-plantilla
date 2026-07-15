@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Comparator;
+import java.time.ZoneId;
 /**
  * Planificador que cada 5 minutos reales asigna los pedidos pendientes de envio_diario
  * a los próximos vuelos disponibles en plan_vuelo_diario.
@@ -120,7 +121,7 @@ public class PlanificadorEnvioService {
     @Scheduled(fixedDelay = 60_000, initialDelay = 30_000)
     @Transactional
     public void actualizarEstadosPorLlegadaDeVuelo() {
-        LocalDateTime ahora = LocalDateTime.now();
+        LocalDateTime ahora = LocalDateTime.now(ZoneId.of("America/Lima"));
 
         // Incluir RETRASADA para que puedan transicionar a ENTREGADA cuando el vuelo aterrice
         List<EnvioDiario> enviosConVuelo = new ArrayList<>();
