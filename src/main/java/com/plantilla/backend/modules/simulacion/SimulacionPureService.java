@@ -20,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -34,6 +35,7 @@ import java.util.stream.Collectors;
 public class SimulacionPureService {
 
     private static final Logger log = LoggerFactory.getLogger(SimulacionPureService.class);
+    private static final String CODIGO_DIAGNOSTICO = "EBCI-OAKB-20280808-0023-2047";
 
     private static final int MAX_ITERACIONES      = 5000;
     private static final double REMOCION_MIN      = 0.10;
@@ -125,6 +127,16 @@ public class SimulacionPureService {
             LocalDateTime desde, LocalDateTime hasta, int maxMaletasSC,
             List<Integer> arrastreIds, long presupuestoMs) {
 
+        return procesarVentanaSC(desde, hasta, maxMaletasSC, arrastreIds,
+                presupuestoMs, Collections.emptySet());
+    }
+
+    @Transactional
+    public Map<String, Object> procesarVentanaSC(
+            LocalDateTime desde, LocalDateTime hasta, int maxMaletasSC,
+            List<Integer> arrastreIds, long presupuestoMs,
+            Set<String> ocurrenciasCanceladas) {
+
         List<Integer> pendientesIds = new ArrayList<>();
 
         Map<String, Aeropuerto> aeropuertosAlns = dataAdapter.cargarAeropuertos();
@@ -135,6 +147,8 @@ public class SimulacionPureService {
         // Vuelos: ventana extendida 5 días para permitir rutas de largo alcance
         List<com.plantilla.backend.modules.algoritmo.alns.model.Vuelo> vuelos =
                 dataAdapter.cargarVuelos(desde, hasta.plusDays(5));
+        excluirOcurrenciasCanceladas(vuelos, ocurrenciasCanceladas);
+        List<String> ocurrenciasDisponibles = clavesOcurrenciasDisponibles(vuelos);
         if (vuelos.isEmpty()) {
             log.info("Ventana SC [{}, {}] sin vuelos disponibles", desde, hasta);
             return resultadoVacio();
@@ -174,6 +188,7 @@ public class SimulacionPureService {
             log.info("Ventana SC [{}, {}] sin envíos", desde, hasta);
             Map<String, Object> r = resultadoVacio();
             r.put("pendientesIds", acotarArrastre(pendientesIds));
+            r.put("ocurrenciasDisponibles", ocurrenciasDisponibles);
             return r;
         }
 
@@ -183,7 +198,9 @@ public class SimulacionPureService {
                 .collect(Collectors.toList());
 
         if (maletas.isEmpty()) {
-            return resultadoVacio();
+            Map<String, Object> r = resultadoVacio();
+            r.put("ocurrenciasDisponibles", ocurrenciasDisponibles);
+            return r;
         }
 
         // ALNS — SIN ESCRIBIR EN BD, con presupuesto de tiempo y parada por estancamiento
@@ -223,18 +240,21 @@ public class SimulacionPureService {
             if (!cumpleSla) violacionesSla++;
 
             for (com.plantilla.backend.modules.algoritmo.alns.model.Vuelo v : ruta.getVuelos()) {
-                String key = v.getId();
+                String key = claveOcurrencia(v);
                 if (!vuelosMap.containsKey(key)) {
                     LocalDateTime salidaUtc  = dataAdapter.toLocalDateTimeUtc(v.getHoraSalida());
                     LocalDateTime llegadaUtc = dataAdapter.toLocalDateTimeUtc(v.getHoraLlegada());
                     Map<String, Object> vd = new LinkedHashMap<>();
-                    vd.put("codigoVuelo",  key);
+                    vd.put("codigoVuelo",  v.getId());
                     vd.put("origen",       v.getOrigen());
                     vd.put("destino",      v.getDestino());
                     vd.put("horaSalidaMs",  salidaUtc.toInstant(ZoneOffset.UTC).toEpochMilli());
                     vd.put("horaLlegadaMs", llegadaUtc.toInstant(ZoneOffset.UTC).toEpochMilli());
                     vd.put("capacidad",     v.getCapacidad());
                     vd.put("totalMaletas", 0);
+                    log.debug("Registrando nuevosVuelos: idVueloBD={} codigoVuelo={} "
+                                    + "horaSalidaALNS={} claveRegistrada={}",
+                            v.getIdVueloBackend(), v.getId(), v.getHoraSalida(), key);
                     vuelosMap.put(key, vd);
                     enviosPorVuelo.put(key, new ArrayList<>());
                 }
@@ -283,7 +303,107 @@ public class SimulacionPureService {
         result.put("violacionesSla",  violacionesSla);
         result.put("pendientesIds",   acotarArrastre(pendientesIds));
         result.put("arrastreEntrante", arrastreEntrante);
+        result.put("ocurrenciasDisponibles", ocurrenciasDisponibles);
         return result;
+    }
+
+    private String claveOcurrencia(com.plantilla.backend.modules.algoritmo.alns.model.Vuelo vuelo) {
+        long salidaMs = dataAdapter.toLocalDateTimeUtc(vuelo.getHoraSalida())
+                .toInstant(ZoneOffset.UTC).toEpochMilli();
+        return SimulacionSesionEstado.claveOcurrencia(vuelo.getId(), salidaMs);
+    }
+
+    @Transactional
+    public boolean existeOcurrencia(String codigoVuelo, long horaSalidaMs) {
+        String claveBuscada = SimulacionSesionEstado.claveOcurrencia(codigoVuelo, horaSalidaMs);
+        return vueloRepository.findByCodigoVuelo(codigoVuelo)
+                .filter(vueloJpa -> vueloJpa.getEstado() != EstadoVuelo.CANCELADO)
+                .map(vueloJpa -> {
+                    com.plantilla.backend.modules.algoritmo.alns.model.Vuelo vueloAlns =
+                            dataAdapter.convertirVuelo(vueloJpa);
+                    String claveModelo = claveOcurrencia(vueloAlns);
+                    long salidaAlnsMs = dataAdapter.toLocalDateTimeUtc(vueloAlns.getHoraSalida())
+                            .toInstant(ZoneOffset.UTC).toEpochMilli();
+                    log.debug("Validando ocurrencia: idVueloBD={} codigoVueloBD={} horaSalidaBD={} "
+                                    + "idVueloALNS={} horaSalidaALNS={} salidaAlnsMs={} salidaAlnsUtc={} "
+                                    + "claveModelo={} claveBuscada={}",
+                            vueloJpa.getIdVuelo(), vueloJpa.getCodigoVuelo(), vueloJpa.getHoraSalida(),
+                            vueloAlns.getId(), vueloAlns.getHoraSalida(), salidaAlnsMs,
+                            java.time.Instant.ofEpochMilli(salidaAlnsMs), claveModelo, claveBuscada);
+                    return claveBuscada.equals(claveModelo);
+                })
+                .orElse(false);
+    }
+
+    public record OcurrenciaCancelacion(String codigoVuelo, long horaSalidaMs) {}
+
+    /** Resuelve la entidad real afectada sin derivar fecha u hora desde codigoVuelo. */
+    @Transactional
+    public Optional<OcurrenciaCancelacion> resolverOcurrenciaCancelacion(
+            String codigoVueloSeleccionado, long fechaHoraSimuladaMs,
+            LocalDateTime finHorizonte, Set<String> ocurrenciasCanceladas) {
+        Optional<com.plantilla.backend.modules.maestro.entity.Vuelo> seleccionadaOpt =
+                vueloRepository.findByCodigoVuelo(codigoVueloSeleccionado);
+        if (seleccionadaOpt.isEmpty()) return Optional.empty();
+
+        com.plantilla.backend.modules.maestro.entity.Vuelo seleccionada = seleccionadaOpt.get();
+        long salidaSeleccionadaMs = horaSalidaAlnsMs(seleccionada);
+        long limiteCancelacionMs = salidaSeleccionadaMs - 3_600_000L;
+        if (fechaHoraSimuladaMs <= limiteCancelacionMs
+                && seleccionada.getEstado() != EstadoVuelo.CANCELADO) {
+            return Optional.of(new OcurrenciaCancelacion(
+                    seleccionada.getCodigoVuelo(), salidaSeleccionadaMs));
+        }
+
+        LocalDateTime salidaSeleccionada = seleccionada.getHoraSalida();
+        LocalTime horarioOperativo = salidaSeleccionada.toLocalTime();
+        LocalDateTime cancelacion = LocalDateTime.ofInstant(
+                java.time.Instant.ofEpochMilli(fechaHoraSimuladaMs), ZoneOffset.UTC);
+        LocalDateTime desde = salidaSeleccionada.plusNanos(1).isAfter(cancelacion)
+                ? salidaSeleccionada.plusNanos(1) : cancelacion;
+        List<com.plantilla.backend.modules.maestro.entity.Vuelo> siguientes = vueloRepository
+                .findByAeropuertoOrigen_IdAeropuertoAndAeropuertoDestino_IdAeropuertoAndHoraSalidaBetweenAndEstadoNotOrderByHoraSalidaAsc(
+                        seleccionada.getAeropuertoOrigen().getIdAeropuerto(),
+                        seleccionada.getAeropuertoDestino().getIdAeropuerto(),
+                        desde, finHorizonte, EstadoVuelo.CANCELADO);
+
+        return siguientes.stream()
+                .filter(v -> v.getHoraSalida().toLocalTime().equals(horarioOperativo))
+                .map(v -> new OcurrenciaCancelacion(v.getCodigoVuelo(), horaSalidaAlnsMs(v)))
+                .filter(v -> ocurrenciasCanceladas == null || !ocurrenciasCanceladas.contains(
+                        SimulacionSesionEstado.claveOcurrencia(v.codigoVuelo(), v.horaSalidaMs())))
+                .findFirst();
+    }
+
+    private long horaSalidaAlnsMs(com.plantilla.backend.modules.maestro.entity.Vuelo vueloJpa) {
+        com.plantilla.backend.modules.algoritmo.alns.model.Vuelo vueloAlns =
+                dataAdapter.convertirVuelo(vueloJpa);
+        return dataAdapter.toLocalDateTimeUtc(vueloAlns.getHoraSalida())
+                .toInstant(ZoneOffset.UTC).toEpochMilli();
+    }
+
+    void excluirOcurrenciasCanceladas(
+            List<com.plantilla.backend.modules.algoritmo.alns.model.Vuelo> vuelos,
+            Set<String> ocurrenciasCanceladas) {
+        if (ocurrenciasCanceladas == null || ocurrenciasCanceladas.isEmpty()) return;
+        vuelos.removeIf(v -> ocurrenciasCanceladas.contains(claveOcurrencia(v)));
+    }
+
+    List<String> clavesOcurrenciasDisponibles(
+            List<com.plantilla.backend.modules.algoritmo.alns.model.Vuelo> vuelos) {
+        java.util.LinkedHashSet<String> claves = new java.util.LinkedHashSet<>();
+        for (com.plantilla.backend.modules.algoritmo.alns.model.Vuelo vuelo : vuelos) {
+            String clave = claveOcurrencia(vuelo);
+            claves.add(clave);
+            if (CODIGO_DIAGNOSTICO.equals(vuelo.getId())) {
+                long salidaAlnsMs = dataAdapter.toLocalDateTimeUtc(vuelo.getHoraSalida())
+                        .toInstant(ZoneOffset.UTC).toEpochMilli();
+                log.debug("OCURRENCIA DISPONIBLE codigo={} salidaAlnsMs={} salidaAlnsUtc={} clave={}",
+                        vuelo.getId(), salidaAlnsMs,
+                        java.time.Instant.ofEpochMilli(salidaAlnsMs), clave);
+            }
+        }
+        return new ArrayList<>(claves);
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -408,6 +528,7 @@ public class SimulacionPureService {
         r.put("violacionesSla",  0);
         r.put("pendientesIds",   Collections.emptyList());
         r.put("arrastreEntrante", 0);
+        r.put("ocurrenciasDisponibles", Collections.emptyList());
         return r;
     }
 }

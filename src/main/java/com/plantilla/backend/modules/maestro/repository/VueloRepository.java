@@ -41,6 +41,10 @@ public interface VueloRepository extends JpaRepository<Vuelo, Integer> {
     /** Vuelo con la hora de salida más temprana — define el inicio real útil de la simulación. */
     Optional<Vuelo> findTopByOrderByHoraSalidaAsc();
 
+    List<Vuelo> findByAeropuertoOrigen_IdAeropuertoAndAeropuertoDestino_IdAeropuertoAndHoraSalidaBetweenAndEstadoNotOrderByHoraSalidaAsc(
+            Integer idAeropuertoOrigen, Integer idAeropuertoDestino,
+            LocalDateTime desde, LocalDateTime hasta, EstadoVuelo estado);
+
     @EntityGraph(attributePaths = {"aeropuertoOrigen", "aeropuertoDestino"})
     List<Vuelo> findByAeropuertoOrigen_IdAeropuerto(Integer idAeropuertoOrigen);
 

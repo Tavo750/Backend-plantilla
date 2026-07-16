@@ -12,6 +12,8 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.time.LocalDateTime;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.*;
 import java.util.concurrent.*;
@@ -121,6 +123,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                 enviar(session, Map.of("type", "LISTA_SIMS", "sims", snapshotActivas()));
             } else if ("JOIN".equals(type)) {
                 manejarJoin(session, (String) msg.get("simId"));
+            } else if ("CANCEL_FLIGHT".equals(type)) {
+                manejarCancelFlight(session, msg);
             } else if ("STOP".equals(type)) {
                 String sid = sesionASim.remove(session.getId());
                 if (sid != null) {
@@ -306,6 +310,11 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             Map<String, Object> snapshot =
                     simulacionService.construirSnapshotInicial(estado.getFechaInicio());
 
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> vuelosEnAire =
+                    (List<Map<String, Object>>) snapshot.getOrDefault("vuelosEnAire", List.of());
+            estado.registrarOcurrenciasInit(vuelosEnAire);
+
             Map<String, Object> initMsg = new LinkedHashMap<>();
             initMsg.put("type",               "INIT");
             initMsg.put("tiempoSimulacionMs",
@@ -382,11 +391,22 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             long presupuestoMs = (ciclo == 1) ? 10_000 : 45_000;
 
             Map<String, Object> resultado = simulacionService.procesarVentanaSC(
-                    desde, hasta, estado.getMaxMaletasSC(), estado.getArrastreIds(), presupuestoMs);
+                    desde, hasta, estado.getMaxMaletasSC(), estado.getArrastreIds(), presupuestoMs,
+                    estado.getOcurrenciasCanceladas());
 
             @SuppressWarnings("unchecked")
             List<Integer> pendientes = (List<Integer>) resultado.getOrDefault("pendientesIds", List.of());
             estado.setArrastreIds(new ArrayList<>(pendientes));
+
+            @SuppressWarnings("unchecked")
+            List<String> ocurrenciasDisponibles =
+                    (List<String>) resultado.getOrDefault("ocurrenciasDisponibles", List.of());
+            estado.registrarOcurrencias(ocurrenciasDisponibles);
+
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> nuevosVuelos =
+                    (List<Map<String, Object>>) resultado.getOrDefault("nuevosVuelos", List.of());
+            estado.registrarResultados(nuevosVuelos);
 
             Map<String, Object> update = new LinkedHashMap<>();
             update.put("type",               "UPDATE");
@@ -446,8 +466,91 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     // Utilidades
     // ──────────────────────────────────────────────────────────
 
-    /** Termina la simulación. Si es compartida, la retiene un rato para joiners tardíos
-     *  (salvo {@code inmediato}=true, p.ej. tras un error irrecuperable). */
+    /** Cancela una ocurrencia sólo en el estado temporal de la simulación observada. */
+    private void manejarCancelFlight(WebSocketSession session, Map<String, Object> msg) {
+        String codigo = msg.get("codigoVuelo") instanceof String s ? s : null;
+        String simId = sesionASim.get(session.getId());
+        if (simId == null || (msg.get("simId") != null && !simId.equals(msg.get("simId")))) {
+            enviarCancelFlightError(session, codigo, "La sesion no esta observando la simulacion indicada.");
+            return;
+        }
+        SimulacionSesionEstado estado = simsCompartidas.get(simId);
+        if (estado == null || estado.isFinalizada() || !estado.estaActiva()) {
+            enviarCancelFlightError(session, codigo, "La simulacion no existe o ya finalizo.");
+            return;
+        }
+        if (codigo == null || !(msg.get("horaSalidaSeleccionadaMs") instanceof Number salida)
+                || !(msg.get("fechaHoraSimuladaMs") instanceof Number cancelacion)) {
+            enviarCancelFlightError(session, codigo,
+                    "Faltan codigoVuelo, horaSalidaSeleccionadaMs o fechaHoraSimuladaMs.");
+            return;
+        }
+        synchronized (estado) {
+            if (estado.isFinalizada() || !estado.estaActiva()) {
+                enviarCancelFlightError(session, codigo, "La simulacion ya finalizo.");
+                return;
+            }
+            LocalDateTime finHorizonte = estado.getFechaInicio().plusMinutes(
+                    (long) estado.getK() * CICLO_REAL_SEG / 60 * SimulacionSesionEstado.MAX_CICLOS);
+            Optional<SimulacionPureService.OcurrenciaCancelacion> ocurrencia =
+                    simulacionService.resolverOcurrenciaCancelacion(
+                            codigo, cancelacion.longValue(), finHorizonte,
+                            estado.getOcurrenciasCanceladas());
+            if (ocurrencia.isEmpty()) {
+                enviarCancelFlightError(session, codigo,
+                        "No existe una siguiente ocurrencia del vuelo dentro del horizonte de la simulacion");
+                return;
+            }
+            String codigoAfectado = ocurrencia.get().codigoVuelo();
+            long salidaAfectadaMs = ocurrencia.get().horaSalidaMs();
+            String clave = SimulacionSesionEstado.claveOcurrencia(codigoAfectado, salidaAfectadaMs);
+            boolean conocida = estado.conoceOcurrencia(clave);
+            boolean existePersistida = simulacionService.existeOcurrencia(codigoAfectado, salidaAfectadaMs);
+            log.debug("ORIGEN VUELO CANCELADO: {}", estado.origenOcurrencia(clave));
+            log.debug("CANCEL DEBUG codigo={} seleccionadaMs={} seleccionadaUtc={} "
+                            + "simuladaMs={} simuladaUtc={} afectadaMs={} afectadaUtc={} clave={} "
+                            + "conocida={} existePersistida={} ciclos={}",
+                    codigoAfectado, salida.longValue(), Instant.ofEpochMilli(salida.longValue()),
+                    cancelacion.longValue(), Instant.ofEpochMilli(cancelacion.longValue()),
+                    salidaAfectadaMs, Instant.ofEpochMilli(salidaAfectadaMs), clave,
+                    conocida, existePersistida, estado.getCiclosEjecutados());
+            if (estado.getOcurrenciasCanceladas().contains(clave)) {
+                enviarCancelFlightError(session, codigoAfectado, "La ocurrencia ya fue cancelada.");
+                return;
+            }
+            if (!conocida && !existePersistida) {
+                enviarCancelFlightError(session, codigoAfectado,
+                        "La ocurrencia calculada no existe en los vuelos de esta simulacion.");
+                return;
+            }
+            estado.registrarOcurrencia(clave);
+            estado.getOcurrenciasCanceladas().add(clave);
+            Set<Integer> afectados = estado.liberarOcurrencia(clave);
+            estado.agregarAlArrastre(afectados);
+            LocalDate fechaOperacion = Instant.ofEpochMilli(salidaAfectadaMs).atZone(ZoneOffset.UTC).toLocalDate();
+            LocalDate fechaCancelacion = Instant.ofEpochMilli(cancelacion.longValue()).atZone(ZoneOffset.UTC).toLocalDate();
+            Map<String, Object> evento = new LinkedHashMap<>();
+            evento.put("type", "FLIGHT_CANCELLED");
+            evento.put("codigoVuelo", codigoAfectado);
+            evento.put("horaSalidaAfectadaMs", salidaAfectadaMs);
+            evento.put("fechaOperacion", fechaOperacion.toString());
+            evento.put("fechaHoraCancelacionMs", cancelacion.longValue());
+            evento.put("enviosAfectados", new ArrayList<>(afectados));
+            evento.put("cantidadEnviosAfectados", afectados.size());
+            evento.put("aplicaMismoDia", fechaOperacion.equals(fechaCancelacion));
+            emitir(estado, evento);
+        }
+    }
+
+    private void enviarCancelFlightError(WebSocketSession session, String codigo, String mensaje) {
+        Map<String, Object> error = new LinkedHashMap<>();
+        error.put("type", "CANCEL_FLIGHT_ERROR");
+        error.put("codigoVuelo", codigo != null ? codigo : "");
+        error.put("mensaje", mensaje);
+        enviar(session, error);
+    }
+
+    /** Termina la simulación y cancela su tarea programada. */
     private void finalizarSim(SimulacionSesionEstado estado, boolean inmediato) {
         estado.setFinalizada(true);
         if (estado.getTareaScheduled() != null) estado.getTareaScheduled().cancel(false);
