@@ -347,20 +347,16 @@ public class SimulacionPureService {
         if (seleccionadaOpt.isEmpty()) return Optional.empty();
 
         com.plantilla.backend.modules.maestro.entity.Vuelo seleccionada = seleccionadaOpt.get();
-        long salidaSeleccionadaMs = horaSalidaAlnsMs(seleccionada);
-        long limiteCancelacionMs = salidaSeleccionadaMs - 3_600_000L;
-        if (fechaHoraSimuladaMs <= limiteCancelacionMs
-                && seleccionada.getEstado() != EstadoVuelo.CANCELADO) {
-            return Optional.of(new OcurrenciaCancelacion(
-                    seleccionada.getCodigoVuelo(), salidaSeleccionadaMs));
-        }
-
-        LocalDateTime salidaSeleccionada = seleccionada.getHoraSalida();
-        LocalTime horarioOperativo = salidaSeleccionada.toLocalTime();
+        LocalTime horarioOperativo = seleccionada.getHoraSalida().toLocalTime();
+        
+        // Convertir la fecha actual simulada a LocalDateTime
         LocalDateTime cancelacion = LocalDateTime.ofInstant(
                 java.time.Instant.ofEpochMilli(fechaHoraSimuladaMs), ZoneOffset.UTC);
-        LocalDateTime desde = salidaSeleccionada.plusNanos(1).isAfter(cancelacion)
-                ? salidaSeleccionada.plusNanos(1) : cancelacion;
+                
+        // El vuelo a cancelar puede ser hoy (si estamos al menos 1h antes) o los dias siguientes.
+        // Por seguridad buscamos vuelos desde el inicio del dia de cancelacion.
+        LocalDateTime desde = cancelacion.toLocalDate().atStartOfDay();
+
         List<com.plantilla.backend.modules.maestro.entity.Vuelo> siguientes = vueloRepository
                 .findByAeropuertoOrigen_IdAeropuertoAndAeropuertoDestino_IdAeropuertoAndHoraSalidaBetweenAndEstadoNotOrderByHoraSalidaAsc(
                         seleccionada.getAeropuertoOrigen().getIdAeropuerto(),
@@ -369,6 +365,11 @@ public class SimulacionPureService {
 
         return siguientes.stream()
                 .filter(v -> v.getHoraSalida().toLocalTime().equals(horarioOperativo))
+                .filter(v -> {
+                    long salidaMs = horaSalidaAlnsMs(v);
+                    long limiteCancelacionMs = salidaMs - 3_600_000L;
+                    return fechaHoraSimuladaMs <= limiteCancelacionMs;
+                })
                 .map(v -> new OcurrenciaCancelacion(v.getCodigoVuelo(), horaSalidaAlnsMs(v)))
                 .filter(v -> ocurrenciasCanceladas == null || !ocurrenciasCanceladas.contains(
                         SimulacionSesionEstado.claveOcurrencia(v.codigoVuelo(), v.horaSalidaMs())))
