@@ -539,6 +539,12 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             evento.put("cantidadEnviosAfectados", afectados.size());
             evento.put("aplicaMismoDia", fechaOperacion.equals(fechaCancelacion));
             emitir(estado, evento);
+
+            // ── Replanificación inmediata: ejecutar un ciclo ALNS extra para
+            //    reasignar las maletas del vuelo cancelado a vuelos alternativos ──
+            if (!afectados.isEmpty()) {
+                ejecutarCicloReplanificacion(estado);
+            }
         }
     }
 
@@ -548,6 +554,72 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
         error.put("codigoVuelo", codigo != null ? codigo : "");
         error.put("mensaje", mensaje);
         enviar(session, error);
+    }
+
+    /**
+     * Ejecuta un ciclo ALNS extra de replanificación inmediata tras cancelar un vuelo.
+     * No incrementa el contador de ciclos de la simulación.
+     * Usa la ventana actual del puntero de simulación para buscar vuelos alternativos.
+     */
+    private void ejecutarCicloReplanificacion(SimulacionSesionEstado estado) {
+        try {
+            long cicloSimMinutos = (long) estado.getK() * CICLO_REAL_SEG / 60;
+
+            // Usar la ventana del puntero actual (última procesada) para buscar vuelos
+            LocalDateTime hasta = estado.getPunteroSim();
+            LocalDateTime desde = hasta.minusMinutes(cicloSimMinutos);
+
+            log.info("Replanificación por cancelación | sim={} | [{} → {}] | arrastre={}",
+                    estado.getSimId() != null ? estado.getSimId() : estado.getSessionId(),
+                    desde, hasta, estado.getArrastreIds().size());
+
+            // Presupuesto reducido: solo replanificamos las maletas afectadas
+            long presupuestoMs = 15_000;
+
+            Map<String, Object> resultado = simulacionService.procesarVentanaSC(
+                    desde, hasta, estado.getMaxMaletasSC(), estado.getArrastreIds(), presupuestoMs,
+                    estado.getOcurrenciasCanceladas());
+
+            @SuppressWarnings("unchecked")
+            List<Integer> pendientes = (List<Integer>) resultado.getOrDefault("pendientesIds", List.of());
+            estado.setArrastreIds(new java.util.ArrayList<>(pendientes));
+
+            @SuppressWarnings("unchecked")
+            List<String> ocurrenciasDisponibles =
+                    (List<String>) resultado.getOrDefault("ocurrenciasDisponibles", List.of());
+            estado.registrarOcurrencias(ocurrenciasDisponibles);
+
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> nuevosVuelos =
+                    (List<Map<String, Object>>) resultado.getOrDefault("nuevosVuelos", List.of());
+            estado.registrarResultados(nuevosVuelos);
+
+            // Emitir UPDATE con las nuevas asignaciones (sin incrementar ciclo)
+            Map<String, Object> update = new LinkedHashMap<>();
+            update.put("type",               "UPDATE");
+            update.put("tiempoSimulacionMs",
+                    hasta.toInstant(ZoneOffset.UTC).toEpochMilli());
+            update.put("ciclo",        estado.getCiclosEjecutados()); // no incrementa
+            update.put("nuevosVuelos", resultado.get("nuevosVuelos"));
+            update.put("estadisticas", Map.of(
+                    "asignados",        resultado.get("asignados"),
+                    "noAsignados",      resultado.get("noAsignados"),
+                    "enArrastre",       pendientes.size(),
+                    "ciclosCompletados", estado.getCiclosEjecutados(),
+                    "ciclosTotales",    SimulacionSesionEstado.MAX_CICLOS
+            ));
+            emitir(estado, update);
+
+            int asignados = ((Number) resultado.get("asignados")).intValue();
+            int noAsignados = ((Number) resultado.get("noAsignados")).intValue();
+            log.info("Replanificación completada: {} asignados, {} no asignados, {} en arrastre",
+                    asignados, noAsignados, pendientes.size());
+
+        } catch (Exception e) {
+            log.error("Error en ciclo de replanificación por cancelación: {}", e.getMessage(), e);
+            // No finalizar la simulación por un error de replanificación;
+            // las maletas quedan en arrastre para el siguiente ciclo regular
+        }
     }
 
     /** Termina la simulación y cancela su tarea programada. */
