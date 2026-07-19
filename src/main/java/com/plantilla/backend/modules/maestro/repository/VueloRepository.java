@@ -23,32 +23,81 @@ public interface VueloRepository extends JpaRepository<Vuelo, Integer> {
 
     List<Vuelo> findByEstado(EstadoVuelo estado);
 
-    List<Vuelo> findByAeropuertoOrigenIdAeropuerto(Integer idAeropuertoOrigen);
+    List<Vuelo> findByAeropuertoOrigenIdAeropuerto(
+            Integer idAeropuertoOrigen
+    );
 
-    List<Vuelo> findByAeropuertoDestinoIdAeropuerto(Integer idAeropuertoDestino);
+    List<Vuelo> findByAeropuertoDestinoIdAeropuerto(
+            Integer idAeropuertoDestino
+    );
 
     /**
      * Lista los vuelos cuya hora de salida está dentro del rango [desde, hasta].
      * Útil para cargar la ventana de vuelos a usar por el algoritmo ALNS.
      */
-    List<Vuelo> findByHoraSalidaBetween(LocalDateTime desde, LocalDateTime hasta);
+    List<Vuelo> findByHoraSalidaBetween(
+            LocalDateTime desde,
+            LocalDateTime hasta
+    );
 
     /**
-     * Lista los vuelos cuya hora de salida está dentro del rango [desde, hasta] y un estado dado.
+     * Lista los vuelos cuya hora de salida está dentro del rango [desde, hasta]
+     * y un estado dado.
      */
-    List<Vuelo> findByHoraSalidaBetweenAndEstado(LocalDateTime desde, LocalDateTime hasta, EstadoVuelo estado);
+    List<Vuelo> findByHoraSalidaBetweenAndEstado(
+            LocalDateTime desde,
+            LocalDateTime hasta,
+            EstadoVuelo estado
+    );
 
-    /** Vuelo con la hora de salida más temprana — define el inicio real útil de la simulación. */
+    /**
+     * Vuelo con la hora de salida más temprana.
+     * Define el inicio real útil de la simulación.
+     */
     Optional<Vuelo> findTopByOrderByHoraSalidaAsc();
 
     List<Vuelo> findByAeropuertoOrigen_IdAeropuertoAndAeropuertoDestino_IdAeropuertoAndHoraSalidaBetweenAndEstadoNotOrderByHoraSalidaAsc(
-            Integer idAeropuertoOrigen, Integer idAeropuertoDestino,
-            LocalDateTime desde, LocalDateTime hasta, EstadoVuelo estado);
+            Integer idAeropuertoOrigen,
+            Integer idAeropuertoDestino,
+            LocalDateTime desde,
+            LocalDateTime hasta,
+            EstadoVuelo estado
+    );
 
-    @EntityGraph(attributePaths = {"aeropuertoOrigen", "aeropuertoDestino"})
-    List<Vuelo> findByAeropuertoOrigen_IdAeropuerto(Integer idAeropuertoOrigen);
+    @EntityGraph(attributePaths = {
+            "aeropuertoOrigen",
+            "aeropuertoDestino"
+    })
+    List<Vuelo> findByAeropuertoOrigen_IdAeropuerto(
+            Integer idAeropuertoOrigen
+    );
 
-    /** Vuelos que están en vuelo en el momento indicado (simulación: snapshot inicial). */
+    /**
+     * Vuelos que están en vuelo en el momento indicado
+     * para el snapshot inicial de la simulación.
+     */
     List<Vuelo> findByHoraSalidaLessThanEqualAndHoraLlegadaGreaterThanAndEstadoNot(
-            LocalDateTime horaSalida, LocalDateTime horaLlegada, EstadoVuelo estado);
+            LocalDateTime horaSalida,
+            LocalDateTime horaLlegada,
+            EstadoVuelo estado
+    );
+
+    /**
+     * Lista los vuelos cuya fecha de salida pertenece al día indicado.
+     *
+     * El rango usado es:
+     * horaSalida >= inicioDia
+     * horaSalida < inicioDiaSiguiente
+     *
+     * También carga aeropuertoOrigen y aeropuertoDestino
+     * en la misma consulta.
+     */
+    @EntityGraph(attributePaths = {
+            "aeropuertoOrigen",
+            "aeropuertoDestino"
+    })
+    List<Vuelo> findByHoraSalidaGreaterThanEqualAndHoraSalidaLessThanOrderByHoraSalidaAsc(
+            LocalDateTime inicioDia,
+            LocalDateTime inicioDiaSiguiente
+    );
 }
