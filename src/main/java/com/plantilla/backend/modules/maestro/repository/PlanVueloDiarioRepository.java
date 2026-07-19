@@ -8,7 +8,7 @@ import org.springframework.stereotype.Repository;
 
 import java.time.LocalTime;
 import java.util.List;
-
+import java.util.Optional;
 @Repository
 public interface PlanVueloDiarioRepository extends JpaRepository<PlanVueloDiario, Integer> {
 
@@ -35,4 +35,13 @@ public interface PlanVueloDiarioRepository extends JpaRepository<PlanVueloDiario
     );
 
     boolean existsByCodigoOrigenAndCodigoDestinoAndHoraSalida(String codigoOrigen, String codigoDestino, LocalTime horaSalida);
+
+    Optional<PlanVueloDiario>
+    findFirstByCodigoOrigenAndCodigoDestinoAndHoraSalidaAndHoraLlegadaAndCapacidad(
+            String codigoOrigen,
+            String codigoDestino,
+            LocalTime horaSalida,
+            LocalTime horaLlegada,
+            Integer capacidad
+    );
 }
