@@ -22,7 +22,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 @RestController
 @RequestMapping("/maestro/vuelos")
 @RequiredArgsConstructor
@@ -37,14 +38,29 @@ public class VueloController {
     // ── CRUD ─────────────────────────────────────────────────────
 
     @GetMapping
-    @Transactional(Transactional.TxType.REQUIRED)
     @Operation(
-            summary = "Listar vuelos",
-            description = "Obtiene la lista de todos los vuelos"
+            summary = "Listar vuelos de la fecha actual",
+            description = "Obtiene únicamente los vuelos cuya hora de salida corresponde al día actual"
     )
     public ResponseEntity<ApiResponse<List<Vuelo>>> listarVuelos() {
+
+        LocalDate fechaActual = LocalDate.now();
+
+        LocalDateTime inicioDia =
+                fechaActual.atStartOfDay();
+
+        LocalDateTime inicioDiaSiguiente =
+                fechaActual.plusDays(1).atStartOfDay();
+
+        List<Vuelo> vuelos =
+                vueloRepository
+                        .findByHoraSalidaGreaterThanEqualAndHoraSalidaLessThanOrderByHoraSalidaAsc(
+                                inicioDia,
+                                inicioDiaSiguiente
+                        );
+
         return ResponseEntity.ok(
-                ApiResponse.success(vueloRepository.findAll())
+                ApiResponse.success(vuelos)
         );
     }
 
