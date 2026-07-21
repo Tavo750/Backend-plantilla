@@ -48,8 +48,15 @@ public class SimulacionPureService {
     private static final long   PRESUPUESTO_DEFAULT_MS = 45_000;
     /** Iteraciones sin mejora global antes de cortar (estancamiento) */
     private static final int    MAX_SIN_MEJORA    = 300;
-    /** Tope de maletas arrastradas entre ventanas (protección de memoria) */
-    private static final int    MAX_ARRASTRE      = 20_000;
+    /**
+     * Tope de envíos arrastrados entre ventanas (protección de memoria). Al
+     * superarlo se descartan envíos de forma PERMANENTE (ver acotarArrastre), así
+     * que debe quedar por encima del backlog máximo posible para no perder envíos.
+     * La demanda total de los 5 días es ~78 000 envíos; con maxMaletasSC adecuado el
+     * backlog se mantiene bajo y esto casi nunca se dispara, pero se sube el techo
+     * para que un pico transitorio no borre envíos silenciosamente.
+     */
+    private static final int    MAX_ARRASTRE      = 150_000;
 
     private final BackendDataAdapter         dataAdapter;
     private final VueloRepository            vueloRepository;

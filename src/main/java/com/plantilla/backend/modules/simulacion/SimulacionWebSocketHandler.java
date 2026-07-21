@@ -58,7 +58,16 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     /** Frecuencia con la que el productor revisa si toca arrancar otro ciclo */
     private static final int CHECK_BUFER_SEG   = 10;
     private static final int K_DEFAULT         = 120;
-    private static final int SC_DEFAULT        = 5000;
+    /**
+     * Tope de maletas procesadas por ventana ALNS. Debe superar la demanda por
+     * ventana o el resto se difiere al arrastre y termina descartándose.
+     * Demanda real ≈ 12 000 maletas por ventana de 10 h (≈ 146 700 en 5 días / 12
+     * ventanas); la red tiene ~32× de capacidad de asientos, así que el greedy las
+     * coloca casi todas. Con 5 000 (valor previo) solo se procesaba el ~41 % de la
+     * demanda total y el 59 % restante se perdía. 25 000 cubre el pico por ventana
+     * con margen; si el greedy asigna todo, el ALNS ni siquiera se ejecuta.
+     */
+    private static final int SC_DEFAULT        = 25000;
     /** Tras terminar, la simulación compartida se retiene este tiempo para joiners tardíos */
     private static final long RETENCION_FIN_MS = 15 * 60 * 1000L;
 
@@ -526,8 +535,6 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             estado.registrarOcurrencia(clave);
             estado.getOcurrenciasCanceladas().add(clave);
             Set<Integer> afectados = estado.liberarOcurrencia(clave);
-            log.info("[CANCEL-DIAG] ocurrencia={} afectados({})={}",
-                    clave, afectados.size(), afectados);
             estado.agregarAlArrastre(afectados);
             LocalDate fechaOperacion = Instant.ofEpochMilli(salidaAfectadaMs).atZone(ZoneOffset.UTC).toLocalDate();
             LocalDate fechaCancelacion = Instant.ofEpochMilli(cancelacion.longValue()).atZone(ZoneOffset.UTC).toLocalDate();
@@ -611,8 +618,6 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             List<Map<String, Object>> enviosNoReasignados =
                     simulacionService.detalleEnviosNoReasignados(
                             noReasignados, codigoVueloCancelado, salidaAfectadaMs);
-            log.info("[REPLAN-DIAG] afectados={} reasignados={} noReasignados={} emitidosDetalle={}",
-                    afectados, reasignados, noReasignados, enviosNoReasignados.size());
 
             // Emitir UPDATE con las nuevas asignaciones (sin incrementar ciclo)
             Map<String, Object> update = new LinkedHashMap<>();
