@@ -526,6 +526,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             estado.registrarOcurrencia(clave);
             estado.getOcurrenciasCanceladas().add(clave);
             Set<Integer> afectados = estado.liberarOcurrencia(clave);
+            log.info("[CANCEL-DIAG] ocurrencia={} afectados({})={}",
+                    clave, afectados.size(), afectados);
             estado.agregarAlArrastre(afectados);
             LocalDate fechaOperacion = Instant.ofEpochMilli(salidaAfectadaMs).atZone(ZoneOffset.UTC).toLocalDate();
             LocalDate fechaCancelacion = Instant.ofEpochMilli(cancelacion.longValue()).atZone(ZoneOffset.UTC).toLocalDate();
@@ -609,6 +611,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             List<Map<String, Object>> enviosNoReasignados =
                     simulacionService.detalleEnviosNoReasignados(
                             noReasignados, codigoVueloCancelado, salidaAfectadaMs);
+            log.info("[REPLAN-DIAG] afectados={} reasignados={} noReasignados={} emitidosDetalle={}",
+                    afectados, reasignados, noReasignados, enviosNoReasignados.size());
 
             // Emitir UPDATE con las nuevas asignaciones (sin incrementar ciclo)
             Map<String, Object> update = new LinkedHashMap<>();
