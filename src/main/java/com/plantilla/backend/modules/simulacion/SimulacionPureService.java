@@ -313,6 +313,63 @@ public class SimulacionPureService {
         return SimulacionSesionEstado.claveOcurrencia(vuelo.getId(), salidaMs);
     }
 
+    /**
+     * Construye el detalle de los envíos afectados por una cancelación que NO
+     * pudieron reasignarse (siguen en el arrastre / cola de replanificación).
+     * El frontend los pinta como el tramo cancelado de su vuelo original para que
+     * el buscador refleje su estado ("Vuelo cancelado · pendiente de replanificación")
+     * en lugar de hacerlos desaparecer al no tener ningún tramo activo asignado.
+     */
+    @Transactional
+    public List<Map<String, Object>> detalleEnviosNoReasignados(
+            Collection<Integer> ids, String codigoVueloCancelado, long salidaAfectadaMs) {
+        if (ids == null || ids.isEmpty()) return List.of();
+
+        // Origen/destino y llegada del vuelo cancelado. La ocurrencia afectada puede
+        // caer en un día distinto al de la entidad base, así que la llegada se deriva
+        // de la duración (llegada - salida) sumada a la salida afectada.
+        String origen = null;
+        String destino = null;
+        long horaLlegadaMs = salidaAfectadaMs;
+        var vueloOpt = vueloRepository.findByCodigoVuelo(codigoVueloCancelado);
+        if (vueloOpt.isPresent()) {
+            var v = vueloOpt.get();
+            origen  = v.getAeropuertoOrigen().getCodigoOaci();
+            destino = v.getAeropuertoDestino().getCodigoOaci();
+            long duracionMs = v.getHoraLlegada().toInstant(ZoneOffset.UTC).toEpochMilli()
+                    - v.getHoraSalida().toInstant(ZoneOffset.UTC).toEpochMilli();
+            horaLlegadaMs = salidaAfectadaMs + Math.max(0, duracionMs);
+        }
+        // Respaldo: derivar origen/destino del propio código (ORIGEN-DESTINO-fecha-...).
+        if (origen == null || destino == null) {
+            String[] partes = codigoVueloCancelado.split("-");
+            if (partes.length >= 2) { origen = partes[0]; destino = partes[1]; }
+        }
+
+        List<Map<String, Object>> detalle = new ArrayList<>();
+        for (EnvioMaletas e : envioMaletasRepository.findAllById(ids)) {
+            Map<String, Object> d = new LinkedHashMap<>();
+            d.put("idEnvio",       e.getIdEnvio());
+            d.put("cantidad",      e.getCantidad() != null ? e.getCantidad() : 1);
+            d.put("codigoVuelo",   codigoVueloCancelado);
+            d.put("origen",        origen);
+            d.put("destino",       destino);
+            d.put("horaSalidaMs",  salidaAfectadaMs);
+            d.put("horaLlegadaMs", horaLlegadaMs);
+            if (e.getFechaRegistro() != null) {
+                d.put("fechaRegistroMs",
+                        e.getFechaRegistro().toInstant(ZoneOffset.UTC).toEpochMilli());
+            }
+            if (e.getFechaLimiteEntrega() != null) {
+                d.put("fechaLimiteMs",
+                        e.getFechaLimiteEntrega().toInstant(ZoneOffset.UTC).toEpochMilli());
+            }
+            d.put("cumpleSla", false);
+            detalle.add(d);
+        }
+        return detalle;
+    }
+
     @Transactional
     public boolean existeOcurrencia(String codigoVuelo, long horaSalidaMs) {
         String claveBuscada = SimulacionSesionEstado.claveOcurrencia(codigoVuelo, horaSalidaMs);

@@ -543,7 +543,7 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             // ── Replanificación inmediata: ejecutar un ciclo ALNS extra para
             //    reasignar las maletas del vuelo cancelado a vuelos alternativos ──
             if (!afectados.isEmpty()) {
-                ejecutarCicloReplanificacion(estado);
+                ejecutarCicloReplanificacion(estado, afectados, codigoAfectado, salidaAfectadaMs);
             }
         }
     }
@@ -561,7 +561,10 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
      * No incrementa el contador de ciclos de la simulación.
      * Usa la ventana actual del puntero de simulación para buscar vuelos alternativos.
      */
-    private void ejecutarCicloReplanificacion(SimulacionSesionEstado estado) {
+    private void ejecutarCicloReplanificacion(SimulacionSesionEstado estado,
+                                              Set<Integer> afectados,
+                                              String codigoVueloCancelado,
+                                              long salidaAfectadaMs) {
         try {
             long cicloSimMinutos = (long) estado.getK() * CICLO_REAL_SEG / 60;
 
@@ -594,6 +597,19 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     (List<Map<String, Object>>) resultado.getOrDefault("nuevosVuelos", List.of());
             estado.registrarResultados(nuevosVuelos);
 
+            // ── Envíos afectados que NO se pudieron reasignar en este ciclo ──
+            //    No aparecen en nuevosVuelos (solo lleva los asignados), así que sin
+            //    esto desaparecerían del buscador. Se emiten para que el frontend los
+            //    muestre como el tramo cancelado de su vuelo original (pendiente de
+            //    replanificación) en vez de dejarlos sin ningún estado.
+            Set<Integer> reasignados = idsEnviosDeNuevosVuelos(nuevosVuelos);
+            List<Integer> noReasignados = afectados.stream()
+                    .filter(id -> !reasignados.contains(id))
+                    .collect(java.util.stream.Collectors.toList());
+            List<Map<String, Object>> enviosNoReasignados =
+                    simulacionService.detalleEnviosNoReasignados(
+                            noReasignados, codigoVueloCancelado, salidaAfectadaMs);
+
             // Emitir UPDATE con las nuevas asignaciones (sin incrementar ciclo)
             Map<String, Object> update = new LinkedHashMap<>();
             update.put("type",               "UPDATE");
@@ -601,6 +617,7 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     hasta.toInstant(ZoneOffset.UTC).toEpochMilli());
             update.put("ciclo",        estado.getCiclosEjecutados()); // no incrementa
             update.put("nuevosVuelos", resultado.get("nuevosVuelos"));
+            update.put("enviosNoReasignados", enviosNoReasignados);
             update.put("estadisticas", Map.of(
                     "asignados",        resultado.get("asignados"),
                     "noAsignados",      resultado.get("noAsignados"),
@@ -620,6 +637,23 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             // No finalizar la simulación por un error de replanificación;
             // las maletas quedan en arrastre para el siguiente ciclo regular
         }
+    }
+
+    /** Extrae los idEnvio ya reasignados presentes en la lista de nuevosVuelos. */
+    private Set<Integer> idsEnviosDeNuevosVuelos(List<Map<String, Object>> nuevosVuelos) {
+        Set<Integer> ids = new HashSet<>();
+        if (nuevosVuelos == null) return ids;
+        for (Map<String, Object> vuelo : nuevosVuelos) {
+            Object enviosObj = vuelo.get("envios");
+            if (!(enviosObj instanceof List<?> envios)) continue;
+            for (Object envioObj : envios) {
+                if (envioObj instanceof Map<?, ?> envio
+                        && envio.get("idEnvio") instanceof Number id) {
+                    ids.add(id.intValue());
+                }
+            }
+        }
+        return ids;
     }
 
     /** Termina la simulación y cancela su tarea programada. */
