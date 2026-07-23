@@ -1,0 +1,14 @@
+# Individuales SABE — registrar a mano (origen, destino, cantidad)
+ORIGEN  DESTINO  CANTIDAD
+SABE    SCEL     180
+SABE    SVMI     180
+SABE    SBBR     10
+SABE    SKBO     10
+SABE    SGAS     15
+SABE    SUAA     15
+SABE    EBCI     180
+SABE    LBSF     180
+SABE    OAKB     10
+SABE    OPKC     10
+SABE    EHAM     15
+SABE    OMDB     15

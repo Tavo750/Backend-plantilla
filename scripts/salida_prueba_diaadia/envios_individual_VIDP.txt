@@ -1,0 +1,14 @@
+# Individuales VIDP — registrar a mano (origen, destino, cantidad)
+ORIGEN  DESTINO  CANTIDAD
+VIDP    SCEL     180
+VIDP    SVMI     180
+VIDP    SBBR     10
+VIDP    SKBO     10
+VIDP    SGAS     15
+VIDP    SUAA     15
+VIDP    EBCI     180
+VIDP    LBSF     180
+VIDP    OAKB     10
+VIDP    OPKC     10
+VIDP    EHAM     15
+VIDP    OMDB     15

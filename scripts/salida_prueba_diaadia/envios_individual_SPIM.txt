@@ -1,0 +1,14 @@
+# Individuales SPIM — registrar a mano (origen, destino, cantidad)
+ORIGEN  DESTINO  CANTIDAD
+SPIM    SCEL     180
+SPIM    SVMI     180
+SPIM    SBBR     10
+SPIM    SKBO     10
+SPIM    SGAS     15
+SPIM    SUAA     15
+SPIM    EBCI     180
+SPIM    LBSF     180
+SPIM    OAKB     10
+SPIM    OPKC     10
+SPIM    EHAM     15
+SPIM    OMDB     15
