@@ -1,0 +1,14 @@
+# Individuales EKCH — registrar a mano (origen, destino, cantidad)
+ORIGEN  DESTINO  CANTIDAD
+EKCH    SCEL     180
+EKCH    SVMI     180
+EKCH    SBBR     10
+EKCH    SKBO     10
+EKCH    SGAS     15
+EKCH    SUAA     15
+EKCH    EBCI     180
+EKCH    LBSF     180
+EKCH    OAKB     10
+EKCH    OPKC     10
+EKCH    EHAM     15
+EKCH    OMDB     15

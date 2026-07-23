@@ -101,9 +101,13 @@ public class EnvioDiarioServiceImpl implements EnvioDiarioService {
                             .orElseThrow(() -> new RuntimeException("No existe ninguna política de entrega"))));
         }
 
+        // La fecha/hora de registro se estampa en el HUSO HORARIO DEL AEROPUERTO DE ORIGEN
+        // (no siempre Lima): así cada sede (Lima, Buenos Aires, Copenhague, Delhi) registra
+        // en su propia hora local, tal como exige la prueba de operación día a día.
+        int gmtOrigen = origen.getGmt() != null ? origen.getGmt() : -5;
         LocalDateTime fechaRegistro = dto.getFechaRegistro() != null
                 ? dto.getFechaRegistro()
-                : LocalDateTime.now(java.time.ZoneId.of("America/Lima"));
+                : LocalDateTime.now(java.time.ZoneOffset.ofHours(gmtOrigen));
 
         envio.setFechaRegistro(fechaRegistro);
 

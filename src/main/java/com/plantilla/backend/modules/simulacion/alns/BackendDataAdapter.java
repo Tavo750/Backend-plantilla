@@ -5,6 +5,7 @@ import com.plantilla.backend.modules.algoritmo.alns.model.Maleta;
 import com.plantilla.backend.modules.algoritmo.alns.model.Vuelo;
 import com.plantilla.backend.modules.algoritmo.alns.util.FlightIndex;
 import com.plantilla.backend.modules.algoritmo.alns.util.TimeUtils;
+import com.plantilla.backend.modules.envio.entity.EnvioDiario;
 import com.plantilla.backend.modules.envio.entity.EnvioMaletas;
 import com.plantilla.backend.modules.envio.repository.EnvioMaletasRepository;
 import com.plantilla.backend.modules.maestro.repository.AeropuertoRepository;
@@ -183,6 +184,79 @@ public class BackendDataAdapter {
         int cantidad = e.getCantidad() != null ? e.getCantidad() : 1;
 
         // Derivar prioridad de la cantidad (igual que el código original ALNS)
+        int prioridad;
+        if (cantidad >= 5) {
+            prioridad = 1;
+        } else if (cantidad >= 3) {
+            prioridad = 2;
+        } else {
+            prioridad = 3;
+        }
+
+        String idCompuesto = "E-" + e.getIdEnvio();
+        String idCliente = e.getAerolinea() != null && e.getAerolinea().getIdAerolinea() != null
+                ? "A" + e.getAerolinea().getIdAerolinea()
+                : "0000000";
+
+        return new Maleta(
+                idCompuesto,
+                origen,
+                destino,
+                fechaCreacionUtcMin,
+                slaDeadlineMin,
+                prioridad,
+                cantidad,
+                idCliente,
+                e.getIdEnvio()
+        );
+    }
+
+    /**
+     * Convierte un envío de la OPERACIÓN DIARIA (tabla envio_diario) al modelo
+     * interno {@link Maleta} del ALNS. Misma lógica que {@link #convertirEnvio}
+     * pero sobre {@link EnvioDiario} (los campos relevantes son idénticos).
+     * Método aparte para no alterar el flujo de simulación.
+     */
+    public Maleta convertirEnvioDiario(EnvioDiario e, Map<String, Aeropuerto> aeropuertos) {
+        return convertirEnvioDiario(e, aeropuertos, null);
+    }
+
+    /**
+     * Igual que {@link #convertirEnvioDiario(EnvioDiario, Map)} pero permite forzar la
+     * hora de DISPONIBILIDAD de la maleta (cuándo puede empezar a volar). En la
+     * operación diaria se usa "ahora" (UTC) para que un pedido recién registrado se
+     * enrute solo a vuelos futuros, evitando el desfase de zona horaria del registro.
+     */
+    public Maleta convertirEnvioDiario(EnvioDiario e, Map<String, Aeropuerto> aeropuertos,
+                                       LocalDateTime disponibleUtc) {
+        String origen = e.getAeropuertoOrigen().getCodigoOaci();
+        String destino = e.getAeropuertoDestino().getCodigoOaci();
+
+        if (origen != null && origen.equals(destino)) {
+            return null;
+        }
+
+        Aeropuerto aeroOrigen = aeropuertos.get(origen);
+        Aeropuerto aeroDestino = aeropuertos.get(destino);
+        if (aeroOrigen == null || aeroDestino == null) {
+            log.warn("EnvioDiario {} omitido: aeropuerto origen/destino no en mapa ({} → {})",
+                    e.getIdEnvio(), origen, destino);
+            return null;
+        }
+
+        long fechaCreacionUtcMin = toMinutosUtcDesdeEpoch(
+                disponibleUtc != null ? disponibleUtc : e.getFechaRegistro());
+
+        int slaDeadlineMin;
+        if (e.getFechaLimiteEntrega() != null) {
+            slaDeadlineMin = (int) toMinutosUtcDesdeEpoch(e.getFechaLimiteEntrega());
+        } else {
+            int slaDuracionMin = aeroOrigen.calcularSLA(aeroDestino);
+            slaDeadlineMin = (int) (fechaCreacionUtcMin + slaDuracionMin);
+        }
+
+        int cantidad = e.getCantidad() != null ? e.getCantidad() : 1;
+
         int prioridad;
         if (cantidad >= 5) {
             prioridad = 1;

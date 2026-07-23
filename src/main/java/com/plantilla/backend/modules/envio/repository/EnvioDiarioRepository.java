@@ -16,6 +16,10 @@ public interface EnvioDiarioRepository extends JpaRepository<EnvioDiario, Intege
     @Query("SELECT e FROM EnvioDiario e WHERE CAST(e.estado AS string) = :estado")
     List<EnvioDiario> findByEstado(@Param("estado") String estado);
 
+    /** Operación diaria (planificación continua): envíos registrados en una ventana. */
+    List<EnvioDiario> findByFechaRegistroBetweenOrderByFechaRegistroAsc(
+            LocalDateTime desde, LocalDateTime hasta);
+
     /** Envíos asignados a un vuelo específico del plan diario. */
     List<EnvioDiario> findByIdPlanVueloAsignado(Integer idPlanVueloAsignado);
 
