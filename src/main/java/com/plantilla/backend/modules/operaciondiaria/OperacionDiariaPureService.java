@@ -263,6 +263,32 @@ public class OperacionDiariaPureService {
         return result;
     }
 
+    /**
+     * Lista liviana de pedidos registrados en la ventana dada, para reflejarlos en el
+     * almacén de ORIGEN apenas se registran (sin esperar a que se planifiquen).
+     * fechaRegistroMs se devuelve en UTC real (fecha_registro está en hora local del origen).
+     */
+    @Transactional
+    public List<Map<String, Object>> pedidosRecientes(LocalDateTime desde, LocalDateTime hasta) {
+        return envioDiarioRepository
+                .findByFechaRegistroBetweenOrderByFechaRegistroAsc(desde, hasta)
+                .stream()
+                .map(e -> {
+                    int gmt = e.getAeropuertoOrigen() != null && e.getAeropuertoOrigen().getGmt() != null
+                            ? e.getAeropuertoOrigen().getGmt() : 0;
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("idEnvio",  e.getIdEnvio());
+                    m.put("origen",   e.getAeropuertoOrigen().getCodigoOaci());
+                    m.put("destino",  e.getAeropuertoDestino().getCodigoOaci());
+                    m.put("cantidad", e.getCantidad() != null ? e.getCantidad() : 0);
+                    m.put("fechaRegistroMs", e.getFechaRegistro() != null
+                            ? e.getFechaRegistro().minusHours(gmt).toInstant(ZoneOffset.UTC).toEpochMilli()
+                            : System.currentTimeMillis());
+                    return m;
+                })
+                .collect(Collectors.toList());
+    }
+
     private Map<String, Object> resultadoVacio() {
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("nuevosVuelos",     Collections.emptyList());

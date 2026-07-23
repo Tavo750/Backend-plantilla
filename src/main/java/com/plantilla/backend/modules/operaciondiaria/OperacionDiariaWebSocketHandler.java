@@ -5,6 +5,8 @@ import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -38,6 +40,8 @@ public class OperacionDiariaWebSocketHandler extends TextWebSocketHandler {
 
     /** Intervalo de planificación: 2 minutos (un pedido se planifica en ≤2 min). */
     private static final int SA_SEG        = 120;
+    /** Intervalo de reflejo de pedidos registrados en su almacén de origen (casi instantáneo). */
+    private static final int PEDIDO_POLL_SEG = 2;
     /** Tope de maletas físicas por ventana de planificación. */
     private static final int MAX_MALETAS   = 20_000;
     /** Presupuesto de cómputo del ALNS por ventana. */
@@ -63,6 +67,12 @@ public class OperacionDiariaWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionEstablished(WebSocketSession session) {
         log.info("OpDiariaWS conectado: {}", session.getId());
         OperacionDiariaEstado estado = obtenerOArrancar();
+        if (estado == null) {
+            // Snapshot aún no disponible (arranque muy temprano): cerrar para que el
+            // cliente reconecte en unos segundos, cuando el pre-calentamiento haya terminado.
+            try { session.close(); } catch (Exception ignored) {}
+            return;
+        }
         estado.getSuscriptores().add(session);
         // Enviar el estado actual al recién llegado: plan de vuelos + asignaciones acumuladas
         Map<String, Object> initMsg = new LinkedHashMap<>();
@@ -79,6 +89,15 @@ public class OperacionDiariaWebSocketHandler extends TextWebSocketHandler {
             upd.put("nuevosVuelos", acumulados);
             upd.put("estadisticas", Map.of("ciclo", estado.getCiclos()));
             enviar(session, upd);
+        }
+
+        // Pedidos ya registrados (en su almacén de origen, aún sin planificar o no)
+        List<Map<String, Object>> pedidos = new ArrayList<>(estado.getPedidosAcumulados());
+        if (!pedidos.isEmpty()) {
+            Map<String, Object> pmsg = new LinkedHashMap<>();
+            pmsg.put("type",    "PEDIDOS_REGISTRADOS");
+            pmsg.put("pedidos", pedidos);
+            enviar(session, pmsg);
         }
     }
 
@@ -212,26 +231,62 @@ public class OperacionDiariaWebSocketHandler extends TextWebSocketHandler {
             estado.setInicioRealMs(System.currentTimeMillis());
 
             // Snapshot de vuelos del plan (ventana amplia para que siempre haya aviones volando)
+            List<Map<String, Object>> vuelos = null;
+            List<Map<String, Object>> aeropuertos = null;
             try {
                 Map<String, Object> snap = servicio.construirSnapshot(
                         ahora.minusHours(6), ahora.plusHours(18));
                 @SuppressWarnings("unchecked")
-                List<Map<String, Object>> vuelos = (List<Map<String, Object>>) snap.get("vuelosEnAire");
+                List<Map<String, Object>> v = (List<Map<String, Object>>) snap.get("vuelosEnAire");
                 @SuppressWarnings("unchecked")
-                List<Map<String, Object>> aeropuertos = (List<Map<String, Object>>) snap.get("aeropuertos");
-                estado.getSnapshotVuelos().addAll(vuelos);
-                estado.getSnapshotAeropuertos().addAll(aeropuertos);
+                List<Map<String, Object>> a = (List<Map<String, Object>>) snap.get("aeropuertos");
+                vuelos = v; aeropuertos = a;
             } catch (Exception e) {
                 log.error("Error construyendo snapshot de operación diaria", e);
             }
+            // No cachear un estado vacío (p.ej. BD momentáneamente no disponible):
+            // se reintenta en el pre-calentamiento o en la próxima conexión.
+            if (vuelos == null || vuelos.isEmpty()) {
+                log.warn("Snapshot de operación diaria vacío; se reintentará.");
+                return null;
+            }
+
+            estado.getSnapshotVuelos().addAll(vuelos);
+            if (aeropuertos != null) estado.getSnapshotAeropuertos().addAll(aeropuertos);
 
             estadoGlobal = estado;
             ScheduledFuture<?> tarea = scheduler.scheduleWithFixedDelay(
                     () -> planificarTick(estadoGlobal), 0, SA_SEG, TimeUnit.SECONDS);
             estado.setTareaScheduled(tarea);
-            log.info("Operación diaria ARRANCADA (planificación cada {} s)", SA_SEG);
+            // Reflejo casi instantáneo de pedidos registrados en su almacén de origen,
+            // sin esperar la planificación (cada PEDIDO_POLL_SEG segundos).
+            scheduler.scheduleWithFixedDelay(
+                    () -> notificarPedidosNuevos(estadoGlobal), 0, PEDIDO_POLL_SEG, TimeUnit.SECONDS);
+            log.info("Operación diaria ARRANCADA ({} vuelos, planificación cada {} s)", vuelos.size(), SA_SEG);
             return estado;
         }
+    }
+
+    /**
+     * Pre-calienta la operación diaria al arrancar la app: construye el snapshot en segundo
+     * plano (con reintentos) para que la PRIMERA conexión reciba el INIT al instante, sin
+     * esperar la consulta de vuelos por el túnel.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void precalentar() {
+        scheduler.submit(() -> {
+            for (int i = 0; i < 15 && estadoGlobal == null; i++) {
+                try {
+                    if (obtenerOArrancar() != null) {
+                        log.info("Operación diaria pre-calentada (snapshot listo para conexiones)");
+                        return;
+                    }
+                } catch (Exception e) {
+                    log.warn("Reintentando pre-calentar operación diaria: {}", e.getMessage());
+                }
+                try { Thread.sleep(3000); } catch (InterruptedException ie) { return; }
+            }
+        });
     }
 
     /** Cada 2 min: planifica los pedidos NUEVOS de envio_diario y difunde las asignaciones. */
@@ -270,6 +325,34 @@ public class OperacionDiariaWebSocketHandler extends TextWebSocketHandler {
             }
         } catch (Exception e) {
             log.error("Error en tick de operación diaria: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Difunde los pedidos recién registrados para que aparezcan en su almacén de ORIGEN
+     * de inmediato (sin esperar la planificación). Idempotente: cada pedido se envía una vez.
+     */
+    private void notificarPedidosNuevos(OperacionDiariaEstado estado) {
+        if (estado == null) return;
+        try {
+            LocalDateTime ahora = LocalDateTime.now(ZoneOffset.UTC);
+            List<Map<String, Object>> recientes =
+                    servicio.pedidosRecientes(ahora.minusHours(36), ahora.plusHours(12));
+            List<Map<String, Object>> nuevos = new ArrayList<>();
+            for (Map<String, Object> p : recientes) {
+                if (p.get("idEnvio") instanceof Number n
+                        && estado.getPedidosNotificados().add(n.intValue())) {
+                    nuevos.add(p);
+                }
+            }
+            if (nuevos.isEmpty()) return;
+            estado.getPedidosAcumulados().addAll(nuevos);
+            Map<String, Object> msg = new LinkedHashMap<>();
+            msg.put("type",    "PEDIDOS_REGISTRADOS");
+            msg.put("pedidos", nuevos);
+            broadcast(estado, msg);
+        } catch (Exception e) {
+            log.warn("Error reflejando pedidos registrados en opdiaria: {}", e.getMessage());
         }
     }
 

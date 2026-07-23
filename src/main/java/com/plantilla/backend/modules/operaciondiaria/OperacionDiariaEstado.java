@@ -46,6 +46,12 @@ public class OperacionDiariaEstado {
      *  se planifica ni despega para esa fecha; sus maletas se replanifican. */
     private final Set<String> ocurrenciasCanceladas = ConcurrentHashMap.newKeySet();
 
+    /** Ids de pedidos ya notificados al mapa como "registrados en origen" (para no repetir). */
+    private final Set<Integer> pedidosNotificados = ConcurrentHashMap.newKeySet();
+
+    /** Pedidos registrados difundidos (para reconstruir a quien se conecta luego). */
+    private final List<Map<String, Object>> pedidosAcumulados = new CopyOnWriteArrayList<>();
+
     private ScheduledFuture<?> tareaScheduled;
     private int ciclos = 0;
 
