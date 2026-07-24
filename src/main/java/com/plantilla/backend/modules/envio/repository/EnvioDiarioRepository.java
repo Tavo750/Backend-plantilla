@@ -16,9 +16,29 @@ public interface EnvioDiarioRepository extends JpaRepository<EnvioDiario, Intege
     @Query("SELECT e FROM EnvioDiario e WHERE CAST(e.estado AS string) = :estado")
     List<EnvioDiario> findByEstado(@Param("estado") String estado);
 
+    /**
+     * Envíos ya comprometidos (EN_ESPERA/EN_TRANSITO) como PROYECCIÓN escalar — NO entidades
+     * gestionadas — para reflejarlos en el mapa de Operación Diaria sin riesgo de que Hibernate
+     * los vuelva a escribir (lost-update contra el job de estados). Columnas:
+     * [0]idEnvio [1]estado [2]idPlan [3]salidaAsignada [4]llegadaAsignada [5]cantidad
+     * [6]fechaRegistro [7]fechaLimite [8]origenOaci [9]origenGmt [10]destinoOaci
+     */
+    @Query("SELECT e.idEnvio, e.estado, e.idPlanVueloAsignado, e.fechaHoraSalidaAsignada, " +
+           "e.fechaHoraLlegadaAsignada, e.cantidad, e.fechaRegistro, e.fechaLimiteEntrega, " +
+           "o.codigoOaci, o.gmt, d.codigoOaci " +
+           "FROM EnvioDiario e JOIN e.aeropuertoOrigen o JOIN e.aeropuertoDestino d " +
+           "WHERE CAST(e.estado AS string) IN ('EN_ESPERA','EN_TRANSITO') " +
+           "AND e.idPlanVueloAsignado IS NOT NULL " +
+           "AND e.fechaHoraSalidaAsignada IS NOT NULL AND e.fechaHoraLlegadaAsignada IS NOT NULL")
+    List<Object[]> findComprometidosParaMapa();
+
     /** Operación diaria (planificación continua): envíos registrados en una ventana. */
     List<EnvioDiario> findByFechaRegistroBetweenOrderByFechaRegistroAsc(
             LocalDateTime desde, LocalDateTime hasta);
+
+    /** Operación diaria: ids de TODOS los envíos existentes (para reconciliar borrados). */
+    @Query("SELECT e.idEnvio FROM EnvioDiario e")
+    List<Integer> findAllIds();
 
     /** Envíos asignados a un vuelo específico del plan diario. */
     List<EnvioDiario> findByIdPlanVueloAsignado(Integer idPlanVueloAsignado);

@@ -14,6 +14,10 @@ public interface PlanVueloDiarioRepository extends JpaRepository<PlanVueloDiario
 
     List<PlanVueloDiario> findByCodigoOrigenAndCodigoDestino(String codigoOrigen, String codigoDestino);
 
+    /** Proyección escalar id→capacidad (para el mapa de operación diaria, sin entidades gestionadas). */
+    @Query("SELECT p.id, p.capacidad FROM PlanVueloDiario p")
+    List<Object[]> findIdYCapacidad();
+
     List<PlanVueloDiario> findByCodigoOrigen(String codigoOrigen);
 
     List<PlanVueloDiario> findByCodigoDestino(String codigoDestino);
@@ -35,6 +39,10 @@ public interface PlanVueloDiarioRepository extends JpaRepository<PlanVueloDiario
     );
 
     boolean existsByCodigoOrigenAndCodigoDestinoAndHoraSalida(String codigoOrigen, String codigoDestino, LocalTime horaSalida);
+
+    /** Lookup laxo por ruta + hora de salida (para vincular el vuelo asignado al plan). */
+    Optional<PlanVueloDiario> findFirstByCodigoOrigenAndCodigoDestinoAndHoraSalida(
+            String codigoOrigen, String codigoDestino, LocalTime horaSalida);
 
     Optional<PlanVueloDiario>
     findFirstByCodigoOrigenAndCodigoDestinoAndHoraSalidaAndHoraLlegadaAndCapacidad(

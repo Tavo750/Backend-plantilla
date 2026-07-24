@@ -261,7 +261,7 @@ public class OperacionDiariaWebSocketHandler extends TextWebSocketHandler {
             // Reflejo casi instantáneo de pedidos registrados en su almacén de origen,
             // sin esperar la planificación (cada PEDIDO_POLL_SEG segundos).
             scheduler.scheduleWithFixedDelay(
-                    () -> notificarPedidosNuevos(estadoGlobal), 0, PEDIDO_POLL_SEG, TimeUnit.SECONDS);
+                    () -> sincronizarPedidos(estadoGlobal), 0, PEDIDO_POLL_SEG, TimeUnit.SECONDS);
             log.info("Operación diaria ARRANCADA ({} vuelos, planificación cada {} s)", vuelos.size(), SA_SEG);
             return estado;
         }
@@ -289,9 +289,50 @@ public class OperacionDiariaWebSocketHandler extends TextWebSocketHandler {
         });
     }
 
+    /**
+     * Refresca el snapshot de vuelos del plan: detecta vuelos NUEVOS insertados en la BD
+     * después del arranque (p.ej. la carga masiva de planes de la prueba) y los difunde
+     * para que aparezcan volando de inmediato en el mapa.
+     */
+    private void refrescarSnapshotVuelos(OperacionDiariaEstado estado) {
+        try {
+            LocalDateTime ahora = LocalDateTime.now(ZoneOffset.UTC);
+            Map<String, Object> snap = servicio.construirSnapshot(ahora.minusHours(6), ahora.plusHours(18));
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> vuelos = (List<Map<String, Object>>) snap.get("vuelosEnAire");
+            if (vuelos == null || vuelos.isEmpty()) return;
+
+            Set<String> conocidos = new HashSet<>();
+            for (Map<String, Object> v : estado.getSnapshotVuelos()) {
+                Object c = v.get("codigoVuelo"); Object s = v.get("horaSalidaMs");
+                if (c instanceof String cs && s instanceof Number sn) conocidos.add(cs + "|" + sn.longValue());
+            }
+            List<Map<String, Object>> nuevos = new ArrayList<>();
+            for (Map<String, Object> v : vuelos) {
+                Object c = v.get("codigoVuelo"); Object s = v.get("horaSalidaMs");
+                if (c instanceof String cs && s instanceof Number sn
+                        && !conocidos.contains(cs + "|" + sn.longValue())) {
+                    nuevos.add(v);
+                }
+            }
+            if (nuevos.isEmpty()) return;
+            estado.getSnapshotVuelos().addAll(nuevos);
+            // Difundir como UPDATE con 0 maletas: el front los crea y los muestra volando vacíos
+            Map<String, Object> upd = new LinkedHashMap<>();
+            upd.put("type",         "UPDATE");
+            upd.put("nuevosVuelos", nuevos);
+            upd.put("estadisticas", Map.of("ciclo", estado.getCiclos()));
+            broadcast(estado, upd);
+            log.info("OpDiaria: {} vuelos NUEVOS detectados en BD y difundidos al mapa", nuevos.size());
+        } catch (Exception e) {
+            log.warn("Error refrescando snapshot de vuelos opdiaria: {}", e.getMessage());
+        }
+    }
+
     /** Cada 2 min: planifica los pedidos NUEVOS de envio_diario y difunde las asignaciones. */
     private void planificarTick(OperacionDiariaEstado estado) {
         if (estado == null) return;
+        refrescarSnapshotVuelos(estado);
         try {
             synchronized (estado) {
                 LocalDateTime ahora = LocalDateTime.now(ZoneOffset.UTC);
@@ -329,13 +370,17 @@ public class OperacionDiariaWebSocketHandler extends TextWebSocketHandler {
     }
 
     /**
-     * Difunde los pedidos recién registrados para que aparezcan en su almacén de ORIGEN
-     * de inmediato (sin esperar la planificación). Idempotente: cada pedido se envía una vez.
+     * Sincroniza el mapa con la tabla envio_diario en cada ciclo rápido:
+     *  - NUEVOS pedidos → se reflejan en su almacén de origen al instante.
+     *  - BORRADOS (ya no están en la BD) → se quitan del mapa (almacenes y vuelos).
+     * Así cualquier registro o eliminación en Registro de Maletas se refleja de inmediato.
      */
-    private void notificarPedidosNuevos(OperacionDiariaEstado estado) {
+    private void sincronizarPedidos(OperacionDiariaEstado estado) {
         if (estado == null) return;
         try {
             LocalDateTime ahora = LocalDateTime.now(ZoneOffset.UTC);
+
+            // 1. NUEVOS: pedidos registrados en la ventana que aún no se reflejaron
             List<Map<String, Object>> recientes =
                     servicio.pedidosRecientes(ahora.minusHours(36), ahora.plusHours(12));
             List<Map<String, Object>> nuevos = new ArrayList<>();
@@ -345,14 +390,29 @@ public class OperacionDiariaWebSocketHandler extends TextWebSocketHandler {
                     nuevos.add(p);
                 }
             }
-            if (nuevos.isEmpty()) return;
-            estado.getPedidosAcumulados().addAll(nuevos);
-            Map<String, Object> msg = new LinkedHashMap<>();
-            msg.put("type",    "PEDIDOS_REGISTRADOS");
-            msg.put("pedidos", nuevos);
-            broadcast(estado, msg);
+            if (!nuevos.isEmpty()) {
+                estado.getPedidosAcumulados().addAll(nuevos);
+                broadcast(estado, Map.of("type", "PEDIDOS_REGISTRADOS", "pedidos", nuevos));
+            }
+
+            // 2. BORRADOS: ids reflejados que ya NO existen en la BD → quitar del mapa
+            Set<Integer> idsBd = servicio.idsEnviosActuales();
+            List<Integer> eliminados = new ArrayList<>();
+            for (Integer id : estado.getPedidosNotificados()) {
+                if (!idsBd.contains(id)) eliminados.add(id);
+            }
+            if (!eliminados.isEmpty()) {
+                Set<Integer> setElim = new HashSet<>(eliminados);
+                estado.getPedidosNotificados().removeAll(setElim);
+                estado.getReflejados().removeAll(setElim);
+                estado.getPedidosAcumulados().removeIf(p ->
+                        p.get("idEnvio") instanceof Number n && setElim.contains(n.intValue()));
+                scrubEnvios(estado, setElim);   // quitarlos de los vuelos acumulados
+                broadcast(estado, Map.of("type", "PEDIDOS_ELIMINADOS", "ids", eliminados));
+                log.info("OpDiaria: {} pedido(s) eliminados de la BD, quitados del mapa", eliminados.size());
+            }
         } catch (Exception e) {
-            log.warn("Error reflejando pedidos registrados en opdiaria: {}", e.getMessage());
+            log.warn("Error sincronizando pedidos en opdiaria: {}", e.getMessage());
         }
     }
 

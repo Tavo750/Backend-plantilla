@@ -57,4 +57,9 @@ public class Vuelo {
 
     @Column(name = "es_intercontinental", nullable = false)
     private Boolean esIntercontinental = false;
+
+    /** Marca de la tanda de carga masiva (misma para todos los vuelos subidos juntos).
+     *  Los vuelos base (semilla) la tienen NULL; permite identificar y borrar una carga. */
+    @Column(name = "fecha_carga")
+    private LocalDateTime fechaCarga;
 }
