@@ -21,6 +21,8 @@ public interface VueloRepository extends JpaRepository<Vuelo, Integer> {
 
     boolean existsByCodigoVuelo(String codigoVuelo);
 
+    List<Vuelo> findByFechaCarga(java.time.LocalDateTime fechaCarga);
+
     List<Vuelo> findByEstado(EstadoVuelo estado);
 
     List<Vuelo> findByAeropuertoOrigenIdAeropuerto(

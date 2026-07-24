@@ -1,6 +1,8 @@
 package com.plantilla.backend.modules.maestro.service.impl;
 
+import com.plantilla.backend.modules.maestro.entity.Aeropuerto;
 import com.plantilla.backend.modules.maestro.entity.PlanVueloDiario;
+import com.plantilla.backend.modules.maestro.repository.AeropuertoRepository;
 import com.plantilla.backend.modules.maestro.repository.PlanVueloDiarioRepository;
 import com.plantilla.backend.modules.maestro.service.PlanVueloDiarioService;
 import com.plantilla.backend.shared.errors.BusinessException;
@@ -30,6 +32,7 @@ public class PlanVueloDiarioServiceImpl implements PlanVueloDiarioService {
     private static final Logger log = LoggerFactory.getLogger(PlanVueloDiarioServiceImpl.class);
 
     private final PlanVueloDiarioRepository repository;
+    private final AeropuertoRepository aeropuertoRepository;
     private final ResourcePatternResolver resourceLoader;
 
     @Override
@@ -38,21 +41,37 @@ public class PlanVueloDiarioServiceImpl implements PlanVueloDiarioService {
         List<Map<String, Object>> resultado = new ArrayList<>(vuelos.size());
         LocalDate hoy = LocalDate.now();
 
+        // GMT por código OACI: la hora se guarda en UTC, pero al usuario se le muestra
+        // en la hora LOCAL del aeropuerto (salida=origen, llegada=destino), igual que el
+        // código del vuelo y que Operación Diaria / Gestión de Vuelos.
+        Map<String, Integer> gmtPorCodigo = new LinkedHashMap<>();
+        for (Aeropuerto a : aeropuertoRepository.findAll()) {
+            gmtPorCodigo.put(a.getCodigoOaci(), a.getGmt() != null ? a.getGmt() : 0);
+        }
+
         for (PlanVueloDiario v : vuelos) {
             String estado = PlanVueloDiarioService.calcularEstado(v.getHoraSalida(), v.getHoraLlegada());
 
-            // Construir datetimes con la fecha de hoy (overnight: llegada es día siguiente)
-            LocalDateTime horaSalidaDt = LocalDateTime.of(hoy, v.getHoraSalida());
-            LocalDateTime horaLlegadaDt = v.getHoraLlegada().isBefore(v.getHoraSalida())
+            int gmtOrigen  = gmtPorCodigo.getOrDefault(v.getCodigoOrigen(), 0);
+            int gmtDestino = gmtPorCodigo.getOrDefault(v.getCodigoDestino(), 0);
+
+            // Construir datetimes UTC con la fecha de hoy (overnight: llegada es día siguiente)
+            // y llevarlos a la hora LOCAL de cada aeropuerto.
+            LocalDateTime horaSalidaDt = LocalDateTime.of(hoy, v.getHoraSalida()).plusHours(gmtOrigen);
+            LocalDateTime horaLlegadaDt = (v.getHoraLlegada().isBefore(v.getHoraSalida())
                     ? LocalDateTime.of(hoy.plusDays(1), v.getHoraLlegada())
-                    : LocalDateTime.of(hoy, v.getHoraLlegada());
+                    : LocalDateTime.of(hoy, v.getHoraLlegada())).plusHours(gmtDestino);
+
+            // Código con la hora LOCAL del origen (coincide con el código real del vuelo).
+            String hhmmLocal = String.format("%02d%02d",
+                    horaSalidaDt.getHour(), horaSalidaDt.getMinute());
 
             // Calcular ocupación desde envíos asignados
             int maletagAsignadas = 0; // Se puede enriquecer con query al EnvioDiarioRepository si se necesita
 
             Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("id",              v.getId());
-            entry.put("codigoVuelo",     v.getCodigoOrigen() + "-" + v.getCodigoDestino() + "-" + v.getHoraSalida().toString().replace(":", "").substring(0, 4));
+            entry.put("codigoVuelo",     v.getCodigoOrigen() + "-" + v.getCodigoDestino() + "-" + hhmmLocal);
             entry.put("origen",          v.getCodigoOrigen());
             entry.put("destino",         v.getCodigoDestino());
             entry.put("horaSalida",      horaSalidaDt.toString());

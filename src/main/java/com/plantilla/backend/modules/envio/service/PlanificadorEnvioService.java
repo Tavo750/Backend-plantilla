@@ -41,12 +41,15 @@ public class PlanificadorEnvioService {
     private final MonitoreoRealTimeService monitoreoRealTimeService;
 
     /**
-     * Se ejecuta cada 5 minutos reales.
-     * Lee envíos con estado REGISTRADA, les asigna el próximo vuelo disponible.
+     * DESACTIVADO como planificador: la asignación de vuelos la hace ahora el
+     * planificador ALNS de OPERACIÓN DIARIA (OperacionDiariaPureService), que
+     * persiste idPlanVueloAsignado/fechaHoraSalidaAsignada/estado en envio_diario.
+     * Tener dos planificadores producía asignaciones distintas entre el mapa de
+     * operación diaria y Registro de Maletas (desincronización).
      */
-    @Scheduled(fixedDelay = 300_000, initialDelay = 60_000)
     @Transactional
     public void planificar() {
+        if (true) return;   // no-op: fuente única = planificador de operación diaria
         log.info("Planificador iniciando ciclo...");
 
         List<EnvioDiario> pendientes = envioDiarioRepo.findByEstado("REGISTRADA");
@@ -124,7 +127,9 @@ public class PlanificadorEnvioService {
     @Scheduled(fixedDelay = 60_000, initialDelay = 30_000)
     @Transactional
     public void actualizarEstadosPorLlegadaDeVuelo() {
-        LocalDateTime ahora = LocalDateTime.now(LIMA);
+        // Las horas asignadas las persiste el planificador de OPERACIÓN DIARIA en UTC
+        // (mismas horas que la tabla vuelo y el mapa). Comparar contra 'ahora' UTC.
+        LocalDateTime ahora = LocalDateTime.now(java.time.ZoneOffset.UTC);
 
         // Incluir RETRASADA para que puedan transicionar a ENTREGADA cuando el vuelo aterrice
         List<EnvioDiario> enviosConVuelo = new ArrayList<>();
@@ -132,62 +137,62 @@ public class PlanificadorEnvioService {
         enviosConVuelo.addAll(envioDiarioRepo.findByEstado("EN_TRANSITO"));
         enviosConVuelo.addAll(envioDiarioRepo.findByEstado("RETRASADA"));
 
-        // Verificar también paquetes sin vuelo que superaron su fecha límite
+        // Paquetes aún sin vuelo que superaron su fecha límite (la fecha límite está en la
+        // hora LOCAL del aeropuerto de origen → comparar contra el 'ahora' local del origen)
         List<EnvioDiario> sinVuelo = envioDiarioRepo.findByEstado("REGISTRADA");
         for (EnvioDiario envio : sinVuelo) {
-            if (envio.getIdPlanVueloAsignado() == null && !ahora.isBefore(envio.getFechaLimiteEntrega())) {
+            if (envio.getIdPlanVueloAsignado() != null || envio.getFechaLimiteEntrega() == null) continue;
+            int gmt = envio.getAeropuertoOrigen() != null && envio.getAeropuertoOrigen().getGmt() != null
+                    ? envio.getAeropuertoOrigen().getGmt() : -5;
+            LocalDateTime ahoraLocalOrigen = ahora.plusHours(gmt);
+            if (!ahoraLocalOrigen.isBefore(envio.getFechaLimiteEntrega())) {
                 envio.setEstado(EstadoMaleta.RETRASADA);
                 envioDiarioRepo.save(envio);
             }
         }
 
-        // Precargar todos los PlanVuelo necesarios en una sola query — evita N+1
-        Set<Integer> idVuelos = enviosConVuelo.stream()
-                .map(EnvioDiario::getIdPlanVueloAsignado)
-                .filter(Objects::nonNull)
-                .collect(java.util.stream.Collectors.toSet());
-        Map<Integer, PlanVueloDiario> vuelosPorId = planVueloRepo.findAllById(idVuelos)
-                .stream()
-                .collect(java.util.stream.Collectors.toMap(PlanVueloDiario::getId, v -> v));
-
+        int entregados = 0, enTransito = 0, retrasados = 0, errores = 0;
         for (EnvioDiario envio : enviosConVuelo) {
-            if (envio.getIdPlanVueloAsignado() == null) continue;
+            try {
+                // Usar EXACTAMENTE las horas persistidas por el planificador de operación
+                // diaria (no recalcular: eso desincronizaba Registro de Maletas del mapa).
+                LocalDateTime fechaHoraSalida  = envio.getFechaHoraSalidaAsignada();
+                LocalDateTime fechaHoraLlegada = envio.getFechaHoraLlegadaAsignada();
+                if (fechaHoraSalida == null || fechaHoraLlegada == null) continue;
 
-            PlanVueloDiario vuelo = vuelosPorId.get(envio.getIdPlanVueloAsignado());
-            if (vuelo == null) continue;
+                int gmt = envio.getAeropuertoOrigen() != null && envio.getAeropuertoOrigen().getGmt() != null
+                        ? envio.getAeropuertoOrigen().getGmt() : -5;
+                boolean deadlinePasado = envio.getFechaLimiteEntrega() != null
+                        && !ahora.plusHours(gmt).isBefore(envio.getFechaLimiteEntrega());
 
-            // Recalcular siempre usando 'ahora' en Lima para evitar datos guardados
-            // con timezone incorrecto (servidor UTC vs horario Lima).
-            LocalDateTime fechaHoraSalida  = calcularFechaHoraSalida(ahora, vuelo.getHoraSalida());
-            LocalDateTime fechaHoraLlegada = calcularFechaHoraLlegada(fechaHoraSalida.toLocalDate(), vuelo);
+                // Ventana de 15 minutos tras el aterrizaje para marcar como ENTREGADA
+                LocalDateTime entregadaDesde = fechaHoraLlegada.plusMinutes(15);
 
-            // Persistir si cambiaron (corrige datos previos con timezone erróneo)
-            if (!fechaHoraSalida.equals(envio.getFechaHoraSalidaAsignada())
-                    || !fechaHoraLlegada.equals(envio.getFechaHoraLlegadaAsignada())) {
-                envio.setFechaHoraSalidaAsignada(fechaHoraSalida);
-                envio.setFechaHoraLlegadaAsignada(fechaHoraLlegada);
+                EstadoMaleta nuevo;
+                if (!ahora.isBefore(entregadaDesde)) {
+                    nuevo = EstadoMaleta.ENTREGADA;
+                } else if (!ahora.isBefore(fechaHoraLlegada)) {
+                    nuevo = EstadoMaleta.EN_TRANSITO;
+                } else if (!ahora.isBefore(fechaHoraSalida)) {
+                    nuevo = deadlinePasado ? EstadoMaleta.RETRASADA : EstadoMaleta.EN_TRANSITO;
+                } else {
+                    nuevo = deadlinePasado ? EstadoMaleta.RETRASADA : EstadoMaleta.EN_ESPERA;
+                }
+
+                if (nuevo != envio.getEstado()) {
+                    envio.setEstado(nuevo);
+                    envioDiarioRepo.save(envio);
+                }
+                if (nuevo == EstadoMaleta.ENTREGADA) entregados++;
+                else if (nuevo == EstadoMaleta.EN_TRANSITO) enTransito++;
+                else if (nuevo == EstadoMaleta.RETRASADA) retrasados++;
+            } catch (Exception ex) {
+                errores++;
+                log.warn("Estado no actualizado para envío {}: {}", envio.getIdEnvio(), ex.toString());
             }
-
-            // Ventana de 15 minutos tras el aterrizaje para marcar como ENTREGADA
-            LocalDateTime entregadaDesde   = fechaHoraLlegada.plusMinutes(15);
-            boolean deadlinePasado = !ahora.isBefore(envio.getFechaLimiteEntrega());
-
-            if (!ahora.isBefore(entregadaDesde)) {
-                // 15+ min después del aterrizaje → siempre ENTREGADA
-                envio.setEstado(EstadoMaleta.ENTREGADA);
-            } else if (!ahora.isBefore(fechaHoraLlegada)) {
-                // Aterrizó pero aún en ventana de descarga (0–15 min) → EN_TRANSITO
-                envio.setEstado(EstadoMaleta.EN_TRANSITO);
-            } else if (!ahora.isBefore(fechaHoraSalida)) {
-                // En vuelo: RETRASADA si el plazo ya pasó, sino EN_TRANSITO
-                envio.setEstado(deadlinePasado ? EstadoMaleta.RETRASADA : EstadoMaleta.EN_TRANSITO);
-            } else {
-                // Esperando salida: RETRASADA si el plazo ya pasó, sino EN_ESPERA
-                envio.setEstado(deadlinePasado ? EstadoMaleta.RETRASADA : EstadoMaleta.EN_ESPERA);
-            }
-
-            envioDiarioRepo.save(envio);
         }
+        log.info("actualizarEstados [{} UTC]: {} envíos con vuelo → {} entregados, {} en tránsito, {} retrasados, {} errores",
+                ahora, enviosConVuelo.size(), entregados, enTransito, retrasados, errores);
     }
 
     private List<CandidatoVuelo> obtenerCandidatosVuelo(

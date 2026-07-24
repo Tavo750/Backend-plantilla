@@ -10,7 +10,9 @@ import com.plantilla.backend.modules.algoritmo.alns.util.SolutionGenerator;
 import com.plantilla.backend.modules.envio.entity.EnvioDiario;
 import com.plantilla.backend.modules.envio.repository.EnvioDiarioRepository;
 import com.plantilla.backend.modules.maestro.repository.AeropuertoRepository;
+import com.plantilla.backend.modules.maestro.repository.PlanVueloDiarioRepository;
 import com.plantilla.backend.modules.maestro.repository.VueloRepository;
+import com.plantilla.backend.shared.enums.EstadoMaleta;
 import com.plantilla.backend.modules.simulacion.alns.BackendDataAdapter;
 import com.plantilla.backend.shared.enums.EstadoVuelo;
 import jakarta.transaction.Transactional;
@@ -56,6 +58,7 @@ public class OperacionDiariaPureService {
     private final VueloRepository        vueloRepository;
     private final AeropuertoRepository   aeropuertoRepository;
     private final EnvioDiarioRepository  envioDiarioRepository;
+    private final PlanVueloDiarioRepository planVueloDiarioRepository;
 
     /**
      * Snapshot inicial de la operación: TODOS los vuelos del plan cuyo horario de
@@ -226,6 +229,22 @@ public class OperacionDiariaPureService {
                 envioData.put("cantidad",  maleta.getCantidad());
                 envioData.put("cumpleSla", cumpleSla);
                 EnvioDiario envOrig = envioPorId.get(maleta.getIdEnvioBackend());
+                if (envOrig != null) {
+                    // Estado y horas REALES persistidas (misma fuente que Registro de Maletas):
+                    // el panel de Envíos debe reflejar esto y no re-derivar de la ocurrencia
+                    // que el planificador empuja al siguiente día.
+                    if (envOrig.getEstado() != null) {
+                        envioData.put("estado", envOrig.getEstado().name());
+                    }
+                    if (envOrig.getFechaHoraSalidaAsignada() != null) {
+                        envioData.put("salidaAsignadaMs",
+                                envOrig.getFechaHoraSalidaAsignada().toInstant(ZoneOffset.UTC).toEpochMilli());
+                    }
+                    if (envOrig.getFechaHoraLlegadaAsignada() != null) {
+                        envioData.put("llegadaAsignadaMs",
+                                envOrig.getFechaHoraLlegadaAsignada().toInstant(ZoneOffset.UTC).toEpochMilli());
+                    }
+                }
                 if (envOrig != null && envOrig.getFechaRegistro() != null) {
                     // fecha_registro está en la hora LOCAL del origen; convertir a UTC real
                     // (UTC = local - GMT_origen) para que el mapa la ubique bien en el tiempo.
@@ -254,6 +273,51 @@ public class OperacionDiariaPureService {
             if (m.getIdEnvioBackend() != null) asignadosIds.add(m.getIdEnvioBackend());
         }
 
+        // ── PERSISTIR la asignación en envio_diario (única fuente de verdad) ──
+        // Registro de Maletas lee estos campos: así muestra EXACTAMENTE el mismo vuelo
+        // (primer tramo) y horas UTC que el mapa de operación diaria.
+        for (Map.Entry<Maleta, Ruta> entry : mejorPlan.getAsignaciones().entrySet()) {
+            Maleta m = entry.getKey();
+            if (m.getIdEnvioBackend() == null) continue;
+            EnvioDiario envio = envioPorId.get(m.getIdEnvioBackend());
+            if (envio == null) continue;
+            // Solo asignar/persistir pedidos que AÚN NO tienen ruta (REGISTRADA). Los ya
+            // comprometidos (EN_ESPERA=esperando avión, EN_TRANSITO=en vuelo, ENTREGADA,
+            // RETRASADA) NO se re-escriben: reiniciarlos a EN_ESPERA con un vuelo del día
+            // siguiente cada ciclo impedía que su estado avanzara (nunca "entregado") y
+            // terminaban todos retrasados. Su avance lo hace el job de estados por llegada.
+            if (envio.getEstado() != null && envio.getEstado() != EstadoMaleta.REGISTRADA) continue;
+            List<com.plantilla.backend.modules.algoritmo.alns.model.Vuelo> tramos =
+                    entry.getValue().getVuelos();
+            if (tramos.isEmpty()) continue;
+
+            var primero = tramos.get(0);
+            var ultimo  = tramos.get(tramos.size() - 1);
+            LocalDateTime salidaUtc  = dataAdapter.toLocalDateTimeUtc(primero.getHoraSalida());
+            LocalDateTime llegPrimUtc = dataAdapter.toLocalDateTimeUtc(primero.getHoraLlegada());
+            LocalDateTime llegadaUtc = dataAdapter.toLocalDateTimeUtc(ultimo.getHoraLlegada());
+
+            envio.setFechaHoraSalidaAsignada(salidaUtc);
+            envio.setFechaHoraLlegadaAsignada(llegadaUtc);
+            envio.setEstado(EstadoMaleta.EN_ESPERA);
+            // Vincular SIEMPRE una fila del plan diario (lookup laxo por ruta+hora; si no
+            // existe, se crea): Registro de Maletas necesita este id para mostrar el vuelo.
+            var plan = planVueloDiarioRepository
+                    .findFirstByCodigoOrigenAndCodigoDestinoAndHoraSalida(
+                            primero.getOrigen(), primero.getDestino(), salidaUtc.toLocalTime())
+                    .orElseGet(() -> {
+                        var nuevo = new com.plantilla.backend.modules.maestro.entity.PlanVueloDiario();
+                        nuevo.setCodigoOrigen(primero.getOrigen());
+                        nuevo.setCodigoDestino(primero.getDestino());
+                        nuevo.setHoraSalida(salidaUtc.toLocalTime());
+                        nuevo.setHoraLlegada(llegPrimUtc.toLocalTime());
+                        nuevo.setCapacidad(primero.getCapacidad());
+                        return planVueloDiarioRepository.save(nuevo);
+                    });
+            envio.setIdPlanVueloAsignado(plan.getId());
+            envioDiarioRepository.save(envio);
+        }
+
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("nuevosVuelos",    new ArrayList<>(vuelosMap.values()));
         result.put("asignados",       mejorPlan.getTotalMaletasAsignadas());
@@ -261,6 +325,12 @@ public class OperacionDiariaPureService {
         result.put("violacionesSla",  violacionesSla);
         result.put("asignadosIds",    new ArrayList<>(asignadosIds));
         return result;
+    }
+
+    /** Ids de TODOS los envíos existentes ahora en la BD (para reconciliar borrados en el mapa). */
+    @Transactional
+    public java.util.Set<Integer> idsEnviosActuales() {
+        return new java.util.HashSet<>(envioDiarioRepository.findAllIds());
     }
 
     /**

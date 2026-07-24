@@ -5,8 +5,8 @@ Generador configurable para la prueba de OPERACIONES DÍA A DÍA (MoraPack).
 
 Único valor dinámico principal: HORA_PRESENTACION (hora local de Lima en que inicia la prueba).
 A partir de esa hora genera TODO lo pedido en el enunciado:
-  1) Planes de vuelo adicionales (patrón ORIG-DEST-HH:MM-HH:MM-####), con HO/HD ajustados por
-     duración y diferencia de husos.
+  1) Planes de vuelo adicionales en CSV (codigoVuelo, origen, destino, horaSalida, horaLlegada,
+     duracionHoras, capacidadMaxima, esIntercontinental), con horas en el huso local del origen/destino.
   2) Guía de envíos individuales (12 por sede)         -> simple: origen, destino, cantidad (a mano)
   3) Registros de envíos de archivo (12 por sede)      -> ids 10000001..10000012 (formato del enunciado)
   4) CSV de carga masiva por sede (origen,destino,cantidad) -> para el botón "Carga Masiva" de la app
@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 import os
 
 # ═══════════════════════ CONFIGURACIÓN ═══════════════════════
-HORA_PRESENTACION   = 22        # Hora de inicio de la prueba, en hora LOCAL de Lima (SPIM), 24h
+HORA_PRESENTACION   = 11        # Hora de inicio de la prueba, en hora LOCAL de Lima (SPIM), 24h
 MINUTO_PRESENTACION = 0         # Minuto de inicio (la prueba arranca en hora exacta -> 0)
 FECHA               = None      # None = hoy; o fija: "2026-07-24"
 CAPACIDAD_VUELO     = 150       # #### del patrón (se imprime como 0150)
@@ -77,22 +77,45 @@ def local_de(codigo, utc):
     return utc + timedelta(hours=GMT[codigo])
 
 
+# Columnas del CSV de carga de vuelos (formato del sistema)
+PLAN_COLUMNS = ["codigoVuelo", "origen", "destino", "horaSalida", "horaLlegada",
+                "duracionHoras", "capacidadMaxima", "esIntercontinental"]
+
+
+def region(codigo):
+    return "SA" if codigo in SUDAMERICA else "EA"
+
+
+def es_intercontinental(origen, destino):
+    """Intercontinental = el vuelo cruza de una región a otra (Sudamérica ↔ Europa/Asia)."""
+    return region(origen) != region(destino)
+
+
 def generar_planes(utc_inicio):
-    """Genera las líneas de planes de vuelo ORIG-DEST-HH:MM-HH:MM-#### para las 4 sedes."""
-    lineas = []
-    sedes = SEDES_ACTIVAS
+    """Genera las filas de planes de vuelo (una por vuelo) con los 8 campos del CSV.
+    Las horas quedan en el HUSO LOCAL del origen (salida) y del destino (llegada)."""
+    filas = []
+    utc_vuelo = utc_inicio.replace(minute=MINUTO_VUELO)   # los vuelos salen a la hora :MINUTO_VUELO
     dests = [d for d, _ in DESTINOS]
-    for origen in sedes:
-        salida_local = local_de(origen, utc_inicio)                    # despega al inicio (hora local origen)
+    for origen in SEDES_ACTIVAS:
+        salida_local = local_de(origen, utc_vuelo)                      # datetime local del origen
         for destino in dests:
             if destino == origen:
                 continue
             dur = duracion_horas(origen, destino)
-            llegada_local = local_de(destino, utc_inicio + timedelta(hours=dur))
-            ho = salida_local.strftime("%H")
-            hd = llegada_local.strftime("%H")
-            lineas.append(f"{origen}-{destino}-{ho}:{MINUTO_VUELO:02d}-{hd}:{MINUTO_VUELO:02d}-{CAPACIDAD_VUELO:04d}")
-    return lineas
+            llegada_local = local_de(destino, utc_vuelo + timedelta(hours=dur))   # datetime local del destino
+            codigo = f"{origen}-{destino}-{salida_local:%Y%m%d}-{salida_local:%H%M}-{CAPACIDAD_VUELO:04d}"
+            filas.append({
+                "codigoVuelo":        codigo,
+                "origen":             origen,
+                "destino":            destino,
+                "horaSalida":         salida_local.strftime("%Y-%m-%dT%H:%M:%S"),
+                "horaLlegada":        llegada_local.strftime("%Y-%m-%dT%H:%M:%S"),
+                "duracionHoras":      dur,
+                "capacidadMaxima":    CAPACIDAD_VUELO,
+                "esIntercontinental": "true" if es_intercontinental(origen, destino) else "false",
+            })
+    return filas
 
 
 def generar_envios(sede, utc_inicio, id_inicial):
@@ -130,6 +153,13 @@ def escribir(ruta, lineas):
         f.write("\n".join(lineas) + "\n")
 
 
+def escribir_csv(ruta, filas, columnas):
+    lineas = [",".join(columnas)]
+    for f in filas:
+        lineas.append(",".join(str(f[c]) for c in columnas))
+    escribir(ruta, lineas)
+
+
 def main():
     global SEDES_ACTIVAS
     SEDES_ACTIVAS = ["SPIM", "SABE", "EKCH", "VIDP"]
@@ -137,7 +167,12 @@ def main():
         SEDES_ACTIVAS = ["SPIM", "SABE", "EKCH"]   # equipos de 3: sin Delhi
 
     utc_inicio = instante_utc_inicio()
-    os.makedirs(CARPETA_SALIDA, exist_ok=True)
+
+    # La salida SIEMPRE queda junto a este .py (no depende de desde dónde lo ejecutes).
+    # __file__ = ubicación real del script; así nunca escribe en el CWD (VS Code, etc.).
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    carpeta = os.path.join(base_dir, CARPETA_SALIDA)
+    os.makedirs(carpeta, exist_ok=True)
 
     print("=" * 64)
     print("  GENERADOR PRUEBA OPERACIONES DÍA A DÍA")
@@ -145,25 +180,26 @@ def main():
     print(f"  Hora de presentación (Lima): {HORA_PRESENTACION:02d}:{MINUTO_PRESENTACION:02d}")
     print(f"  Instante UTC de inicio:      {utc_inicio:%Y-%m-%d %H:%M}")
     print(f"  Equipo de {EQUIPO} -> sedes: {', '.join(SEDES_ACTIVAS)}")
-    print(f"  Salida en carpeta:           ./{CARPETA_SALIDA}/")
+    print(f"  Salida en carpeta:           {carpeta}")
     print("-" * 64)
     print("  Hora local de inicio por sede:")
     for s in SEDES_ACTIVAS:
         print(f"    {s}: {local_de(s, utc_inicio):%Y-%m-%d %H:%M}")
     print("=" * 64)
 
-    # 1) Planes de vuelo
+    # 1) Planes de vuelo (CSV con los campos del sistema)
     planes = generar_planes(utc_inicio)
-    escribir(os.path.join(CARPETA_SALIDA, "planes_vuelo_adicionales.txt"), planes)
-    print(f"\n[1] Planes de vuelo adicionales ({len(planes)} vuelos):")
-    for l in planes:
-        print("    " + l)
+    escribir_csv(os.path.join(carpeta, "planes_vuelo_adicionales.csv"), planes, PLAN_COLUMNS)
+    print(f"\n[1] Planes de vuelo adicionales ({len(planes)} vuelos) -> planes_vuelo_adicionales.csv:")
+    print("    " + ",".join(PLAN_COLUMNS))
+    for f in planes:
+        print("    " + ",".join(str(f[c]) for c in PLAN_COLUMNS))
 
     # 2) y 3) Envíos individuales y de archivo por sede
     print("\n[2] Envíos INDIVIDUALES — guía simple para registrar a mano (origen, destino, cantidad):")
     for s in SEDES_ACTIVAS:
         ind = generar_individual(s)
-        escribir(os.path.join(CARPETA_SALIDA, f"envios_individual_{s}.txt"), ind)
+        escribir(os.path.join(carpeta, f"envios_individual_{s}.txt"), ind)
         print(f"\n  *** {s}")
         for l in ind:
             print("    " + l)
@@ -171,16 +207,16 @@ def main():
     print("\n[3] Registros de envíos de ARCHIVO (ids 10000001..):")
     for s in SEDES_ACTIVAS:
         env = generar_envios(s, utc_inicio, 10000001)
-        escribir(os.path.join(CARPETA_SALIDA, f"envios_archivo_{s}.txt"), env)
+        escribir(os.path.join(carpeta, f"envios_archivo_{s}.txt"), env)
         print(f"    envios_archivo_{s}.txt  ({len(env)} envíos)")
 
     # 4) CSV de carga masiva por sede (destino,cantidad) para la app
     print("\n[4] CSV de carga masiva (destino,cantidad) por sede:")
     for s in SEDES_ACTIVAS:
-        escribir(os.path.join(CARPETA_SALIDA, f"carga_masiva_{s}.csv"), generar_csv(s))
+        escribir(os.path.join(carpeta, f"carga_masiva_{s}.csv"), generar_csv(s))
         print(f"    carga_masiva_{s}.csv")
 
-    print("\nListo. Revisa la carpeta:", os.path.abspath(CARPETA_SALIDA))
+    print("\nListo. Revisa la carpeta:", carpeta)
 
 
 if __name__ == "__main__":
