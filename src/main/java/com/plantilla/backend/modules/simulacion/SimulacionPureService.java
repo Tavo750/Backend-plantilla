@@ -320,6 +320,9 @@ public class SimulacionPureService {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("idEnvio", envio.getIdEnvio());
             item.put("origen", envio.getAeropuertoOrigen().getCodigoOaci());
+            if (envio.getAeropuertoDestino() != null) {
+                item.put("destino", envio.getAeropuertoDestino().getCodigoOaci());
+            }
             item.put("cantidad", envio.getCantidad() != null ? envio.getCantidad() : 1);
             item.put("fechaRegistroMs",
                     envio.getFechaRegistro().toInstant(ZoneOffset.UTC).toEpochMilli());

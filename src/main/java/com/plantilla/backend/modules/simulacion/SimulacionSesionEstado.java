@@ -116,6 +116,7 @@ public class SimulacionSesionEstado {
         for (Map<String, Object> envio : envios) {
             Object id = envio.get("idEnvio");
             Object origen = envio.get("origen");
+            Object destino = envio.get("destino");
             Object cantidad = envio.get("cantidad");
             Object registro = envio.get("fechaRegistroMs");
             if (!(id instanceof Number) || !(origen instanceof String)
@@ -123,7 +124,9 @@ public class SimulacionSesionEstado {
             int idEnvio = ((Number) id).intValue();
             Long limite = envio.get("fechaLimiteMs") instanceof Number n ? n.longValue() : null;
             demandasEnvio.computeIfAbsent(idEnvio, ignored -> new DemandaEnvio(
-                    idEnvio, (String) origen, ((Number) cantidad).intValue(),
+                    idEnvio, (String) origen,
+                    destino instanceof String d ? d : null,
+                    ((Number) cantidad).intValue(),
                     ((Number) registro).longValue(), limite));
         }
     }
@@ -207,73 +210,76 @@ public class SimulacionSesionEstado {
                 ((Number) salida).longValue(), ((Number) llegada).longValue()));
     }
 
-    /**
-     * Evalua SLA y capacidad usando el snapshot de ocupacion del mismo instante.
-     */
+    /** Evalua exclusivamente incumplimientos reales del SLA. */
     public EstadoColapso detectarColapso(LocalDateTime tiempoSimulado) {
-        if (colapsada) return estadoColapso;
         return detectarColapso(
-                tiempoSimulado, calcularOcupacionesAeropuertos(tiempoSimulado));
+                tiempoSimulado.toInstant(ZoneOffset.UTC).toEpochMilli());
     }
 
+    /** Compara el reloj simulado y el limite usando exclusivamente epoch millis. */
+    public EstadoColapso detectarColapso(long tiempoSimulacionMs) {
+        if (colapsada) return estadoColapso;
+        LocalDateTime tiempoSimulado = LocalDateTime.ofInstant(
+                Instant.ofEpochMilli(tiempoSimulacionMs), ZoneOffset.UTC);
+
+        for (DemandaEnvio demanda : demandasEnvio.values()) {
+            if (demanda.fechaLimiteMs == null
+                    || tiempoSimulacionMs <= demanda.fechaLimiteMs) {
+                continue;
+            }
+            SeguimientoEnvio seguimiento = seguimientosEnvio.get(demanda.idEnvio);
+            if (seguimiento == null
+                    || !seguimiento.entregadoEn(
+                            demanda.destinoFinal, tiempoSimulacionMs)) {
+                return EstadoColapso.sla(demanda.idEnvio,
+                        LocalDateTime.ofInstant(
+                                Instant.ofEpochMilli(demanda.fechaLimiteMs), ZoneOffset.UTC),
+                        tiempoSimulado);
+            }
+        }
+
+        // Algunos resultados pueden llegar sin el snapshot de demanda correspondiente.
+        for (SeguimientoEnvio seguimiento : seguimientosEnvio.values()) {
+            if (demandasEnvio.containsKey(seguimiento.idEnvio)
+                    || seguimiento.fechaLimiteMs == null
+                    || tiempoSimulacionMs <= seguimiento.fechaLimiteMs) {
+                continue;
+            }
+            if (!seguimiento.entregadoEn(tiempoSimulacionMs)) {
+                return EstadoColapso.sla(seguimiento.idEnvio,
+                        LocalDateTime.ofInstant(
+                                Instant.ofEpochMilli(seguimiento.fechaLimiteMs), ZoneOffset.UTC),
+                        tiempoSimulado);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Conserva compatibilidad con los ciclos que ya calcularon el snapshot para
+     * el UPDATE. La ocupacion se muestra, pero nunca determina el colapso.
+     */
     public EstadoColapso detectarColapso(
             LocalDateTime tiempoSimulado,
             Map<String, OcupacionAeropuerto> ocupaciones) {
-        if (colapsada) return estadoColapso;
-        long ahoraMs = tiempoSimulado.toInstant(ZoneOffset.UTC).toEpochMilli();
-
-        for (SeguimientoEnvio envio : seguimientosEnvio.values()) {
-            if (envio.fechaLimiteMs != null && ahoraMs > envio.fechaLimiteMs
-                    && !envio.entregadoEn(ahoraMs)) {
-                return EstadoColapso.sla(envio.idEnvio,
-                        LocalDateTime.ofInstant(
-                                Instant.ofEpochMilli(envio.fechaLimiteMs), ZoneOffset.UTC),
-                        tiempoSimulado);
-            }
-        }
-        for (DemandaEnvio envio : demandasEnvio.values()) {
-            if (!seguimientosEnvio.containsKey(envio.idEnvio)
-                    && envio.fechaLimiteMs != null && ahoraMs > envio.fechaLimiteMs) {
-                return EstadoColapso.sla(envio.idEnvio,
-                        LocalDateTime.ofInstant(
-                                Instant.ofEpochMilli(envio.fechaLimiteMs), ZoneOffset.UTC),
-                        tiempoSimulado);
-            }
-        }
-
-        return detectarCapacidad(ocupaciones, tiempoSimulado);
-    }
-
-    static EstadoColapso detectarCapacidad(
-            Map<String, Integer> ocupaciones, Map<String, Integer> capacidades,
-            LocalDateTime tiempoSimulado) {
-        for (Map.Entry<String, Integer> entry : ocupaciones.entrySet()) {
-            Integer capacidad = capacidades.get(entry.getKey());
-            if (capacidad != null && capacidad > 0 && entry.getValue() >= capacidad) {
-                return EstadoColapso.capacidad(
-                        entry.getKey(), entry.getValue(), capacidad, tiempoSimulado);
-            }
-        }
-        return null;
-    }
-
-    static EstadoColapso detectarCapacidad(
-            Map<String, OcupacionAeropuerto> ocupaciones,
-            LocalDateTime tiempoSimulado) {
-        for (Map.Entry<String, OcupacionAeropuerto> entry : ocupaciones.entrySet()) {
-            OcupacionAeropuerto ocupacion = entry.getValue();
-            if (ocupacion.capacidadMaxima() > 0
-                    && ocupacion.ocupacionActual() >= ocupacion.capacidadMaxima()) {
-                return EstadoColapso.capacidad(
-                        entry.getKey(), ocupacion.ocupacionActual(),
-                        ocupacion.capacidadMaxima(), tiempoSimulado);
-            }
-        }
-        return null;
+        return detectarColapso(tiempoSimulado);
     }
 
     /**
-     * Fuente unica de verdad para la ocupacion mostrada y la deteccion de colapso.
+     * Instante que representa el reloj visible. El puntero ALNS es solo un
+     * horizonte de datos y nunca puede adelantar este reloj para evaluar SLA.
+     */
+    public long tiempoSimuladoActualMs(long ahoraRealMs) {
+        long inicioMs = fechaInicio.toInstant(ZoneOffset.UTC).toEpochMilli();
+        long transcurridoRealMs = Math.max(0L, ahoraRealMs - inicioRealMs);
+        long relojMs = inicioMs + transcurridoRealMs * (long) K;
+        long horizonteMs = punteroSim.toInstant(ZoneOffset.UTC).toEpochMilli();
+        long finMs = inicioMs + java.time.Duration.ofDays(5).toMillis();
+        return Math.min(relojMs, Math.min(horizonteMs, finMs));
+    }
+
+    /**
+     * Fuente unica de verdad para la ocupacion mostrada.
      */
     public Map<String, OcupacionAeropuerto> calcularOcupacionesAeropuertos(
             LocalDateTime tiempoSimulado) {
@@ -367,20 +373,28 @@ public class SimulacionSesionEstado {
             return !tramos.isEmpty()
                     && tramos.get(tramos.size() - 1).llegadaMs <= ahoraMs;
         }
+
+        boolean entregadoEn(String destinoFinal, long ahoraMs) {
+            return entregadoEn(ahoraMs)
+                    && (destinoFinal == null
+                    || destinoFinal.equals(tramos.get(tramos.size() - 1).destino));
+        }
     }
 
     private static final class DemandaEnvio {
         final int idEnvio;
         final int cantidad;
         final Long fechaLimiteMs;
+        final String destinoFinal;
         String origenActual;
         long disponibleDesdeMs;
 
-        DemandaEnvio(int idEnvio, String origen, int cantidad,
+        DemandaEnvio(int idEnvio, String origen, String destinoFinal, int cantidad,
                      long fechaRegistroMs, Long fechaLimiteMs) {
             this.idEnvio = idEnvio;
             this.cantidad = cantidad;
             this.fechaLimiteMs = fechaLimiteMs;
+            this.destinoFinal = destinoFinal;
             this.origenActual = origen;
             this.disponibleDesdeMs = fechaRegistroMs;
         }

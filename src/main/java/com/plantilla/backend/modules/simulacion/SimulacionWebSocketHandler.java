@@ -424,12 +424,17 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     (List<Map<String, Object>>) resultado.getOrDefault("nuevosVuelos", List.of());
             estado.registrarResultados(nuevosVuelos);
 
+            long tiempoSimulacionMs =
+                    estado.tiempoSimuladoActualMs(System.currentTimeMillis());
+            LocalDateTime tiempoSimulado = LocalDateTime.ofInstant(
+                    Instant.ofEpochMilli(tiempoSimulacionMs), ZoneOffset.UTC);
             Map<String, OcupacionAeropuerto> ocupaciones =
-                    estado.calcularOcupacionesAeropuertos(hasta);
+                    estado.calcularOcupacionesAeropuertos(tiempoSimulado);
 
             Map<String, Object> update = new LinkedHashMap<>();
             update.put("type",               "UPDATE");
-            update.put("tiempoSimulacionMs",
+            update.put("tiempoSimulacionMs", tiempoSimulacionMs);
+            update.put("finVentanaMs",
                     hasta.toInstant(ZoneOffset.UTC).toEpochMilli());
             update.put("ciclo",        ciclo);
             update.put("nuevosVuelos", resultado.get("nuevosVuelos"));
@@ -443,7 +448,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             ));
             emitir(estado, update);
 
-            EstadoColapso colapso = estado.detectarColapso(hasta, ocupaciones);
+            EstadoColapso colapso =
+                    estado.detectarColapso(tiempoSimulacionMs);
             if (colapso != null) {
                 detenerSimulacionPorColapso(estado, colapso, ciclo);
                 return;
@@ -488,6 +494,9 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
         evento.put("idEnvio", colapso.idEnvio());
         evento.put("fechaLimiteEntrega", colapso.fechaLimiteEntrega() != null
                 ? colapso.fechaLimiteEntrega().toString() : null);
+        evento.put("fechaLimiteEntregaMs", colapso.fechaLimiteEntrega() != null
+                ? colapso.fechaLimiteEntrega()
+                        .toInstant(ZoneOffset.UTC).toEpochMilli() : null);
         emitir(estado, evento);
 
         estado.setFinalizada(true);
@@ -644,13 +653,18 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     (List<Map<String, Object>>) resultado.getOrDefault("nuevosVuelos", List.of());
             estado.registrarResultados(nuevosVuelos);
 
+            long tiempoSimulacionMs =
+                    estado.tiempoSimuladoActualMs(System.currentTimeMillis());
+            LocalDateTime tiempoSimulado = LocalDateTime.ofInstant(
+                    Instant.ofEpochMilli(tiempoSimulacionMs), ZoneOffset.UTC);
             Map<String, OcupacionAeropuerto> ocupaciones =
-                    estado.calcularOcupacionesAeropuertos(hasta);
+                    estado.calcularOcupacionesAeropuertos(tiempoSimulado);
 
             // Emitir UPDATE con las nuevas asignaciones (sin incrementar ciclo)
             Map<String, Object> update = new LinkedHashMap<>();
             update.put("type",               "UPDATE");
-            update.put("tiempoSimulacionMs",
+            update.put("tiempoSimulacionMs", tiempoSimulacionMs);
+            update.put("finVentanaMs",
                     hasta.toInstant(ZoneOffset.UTC).toEpochMilli());
             update.put("ciclo",        estado.getCiclosEjecutados()); // no incrementa
             update.put("nuevosVuelos", resultado.get("nuevosVuelos"));
@@ -664,7 +678,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             ));
             emitir(estado, update);
 
-            EstadoColapso colapso = estado.detectarColapso(hasta, ocupaciones);
+            EstadoColapso colapso =
+                    estado.detectarColapso(tiempoSimulacionMs);
             if (colapso != null) {
                 detenerSimulacionPorColapso(
                         estado, colapso, estado.getCiclosEjecutados());

@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.concurrent.ScheduledFuture;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.*;
@@ -229,17 +230,19 @@ class SimulacionCancelacionTest {
     }
 
     @Test
-    void capacidadUsaMayorOIgualYNoColapsaConEspacioDisponible() {
+    void capacidadIgualOSuperiorNuncaGeneraColapso() {
         LocalDateTime ahora = LocalDateTime.of(2026, 7, 27, 16, 0);
-        Map<String, Integer> capacidades = Map.of("SPIM", 100);
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarCapacidades(
+                List.of(Map.of("codigoOaci", "SPIM", "capacidad", 100)));
+        estado.registrarDemanda(
+                List.of(demanda(1, "SPIM", 101, ms(27, 15, 0))));
 
-        assertNull(SimulacionSesionEstado.detectarCapacidad(
-                Map.of("SPIM", 99), capacidades, ahora));
-        assertEquals(EstadoColapso.CAPACIDAD_AEROPUERTO,
-                SimulacionSesionEstado.detectarCapacidad(
-                        Map.of("SPIM", 100), capacidades, ahora).tipo());
-        assertEquals(101, SimulacionSesionEstado.detectarCapacidad(
-                Map.of("SPIM", 101), capacidades, ahora).ocupacionActual());
+        OcupacionAeropuerto ocupacion =
+                estado.calcularOcupacionesAeropuertos(ahora).get("SPIM");
+        assertEquals(101, ocupacion.ocupacionActual());
+        assertEquals(101.0, ocupacion.porcentaje());
+        assertNull(estado.detectarColapso(ahora));
     }
 
     @Test
@@ -302,8 +305,75 @@ class SimulacionCancelacionTest {
     }
 
     @Test
+    void horaExactaDelLimiteNoColapsaYUnMinutoDespuesSi() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarDemanda(List.of(Map.of(
+                "idEnvio", 20,
+                "origen", "SPIM",
+                "destino", "SCEL",
+                "cantidad", 1,
+                "fechaRegistroMs", ms(27, 15, 0),
+                "fechaLimiteMs", ms(27, 16, 0))));
+
+        assertNull(estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 16, 0)));
+        assertEquals(EstadoColapso.INCUMPLIMIENTO_SLA,
+                estado.detectarColapso(
+                        LocalDateTime.of(2026, 7, 27, 16, 1)).tipo());
+    }
+
+    @Test
+    void horizontePlanificadoNoAdelantaElRelojUsadoPorSla() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        long inicioMs = estado.getFechaInicio()
+                .toInstant(ZoneOffset.UTC).toEpochMilli();
+        estado.setPunteroSim(estado.getFechaInicio().plusHours(20));
+        estado.setInicioRealMs(1_000_000L);
+
+        long ahoraRealMs = 1_000_000L
+                + java.time.Duration.ofHours(14).toMillis() / estado.getK();
+
+        assertEquals(inicioMs + java.time.Duration.ofHours(14).toMillis(),
+                estado.tiempoSimuladoActualMs(ahoraRealMs));
+    }
+
+    @Test
+    void relojA14NoVenceLimiteDe1755AunqueLaVentanaLlegueA20() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarDemanda(List.of(Map.of(
+                "idEnvio", 13408606,
+                "origen", "SPIM",
+                "destino", "SCEL",
+                "cantidad", 1,
+                "fechaRegistroMs", ms(27, 10, 0),
+                "fechaLimiteMs", ms(27, 17, 55))));
+
+        assertNull(estado.detectarColapso(ms(27, 14, 0)));
+        assertEquals(EstadoColapso.INCUMPLIMIENTO_SLA,
+                estado.detectarColapso(ms(27, 17, 56)).tipo());
+    }
+
+    @Test
+    void aterrizajeIntermedioNoCuentaComoEntregaFinal() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarDemanda(List.of(Map.of(
+                "idEnvio", 21,
+                "origen", "SPIM",
+                "destino", "SCEL",
+                "cantidad", 1,
+                "fechaRegistroMs", ms(27, 12, 0),
+                "fechaLimiteMs", ms(27, 16, 0))));
+        estado.registrarResultados(List.of(vueloConEnvio(
+                "TRAMO-1", "SPIM", "SLLP", ms(27, 13, 0), ms(27, 14, 0),
+                21, 1, ms(27, 12, 0))));
+
+        assertEquals(EstadoColapso.INCUMPLIMIENTO_SLA,
+                estado.detectarColapso(
+                        LocalDateTime.of(2026, 7, 27, 16, 1)).tipo());
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
-    void updatePrecedeAlColapsoYComparteOcupacionYFecha() throws Exception {
+    void updateSaturadoNoColapsaNiCancelaLaSimulacion() throws Exception {
         SimulacionPureService service = mock(SimulacionPureService.class);
         Map<String, Object> resultado = new LinkedHashMap<>();
         resultado.put("enviosDemanda",
@@ -333,28 +403,19 @@ class SimulacionCancelacionTest {
         try {
             handler.ejecutarCiclo(estado);
 
-            assertTrue(estado.isColapsada());
-            assertEquals(2, estado.getMensajesBuffer().size());
+            assertFalse(estado.isColapsada());
+            assertEquals(1, estado.getMensajesBuffer().size());
             Map<String, Object> update = new ObjectMapper().readValue(
                     estado.getMensajesBuffer().get(0), Map.class);
-            Map<String, Object> evento = new ObjectMapper().readValue(
-                    estado.getMensajesBuffer().get(1), Map.class);
             assertEquals("UPDATE", update.get("type"));
-            assertEquals("COLAPSO_DETECTADO", evento.get("type"));
 
             Map<String, Object> ocupaciones =
                     (Map<String, Object>) update.get("ocupacionesAeropuertos");
             Map<String, Object> sllp =
                     (Map<String, Object>) ocupaciones.get("SLLP");
             assertEquals(420, ((Number) sllp.get("ocupacionActual")).intValue());
-            assertEquals(
-                    ((Number) sllp.get("ocupacionActual")).intValue(),
-                    ((Number) evento.get("ocupacionActual")).intValue());
-            assertEquals(
-                    ((Number) sllp.get("capacidadMaxima")).intValue(),
-                    ((Number) evento.get("capacidadMaxima")).intValue());
-            assertEquals(update.get("tiempoSimulacionMs"), evento.get("tiempoSimulacionMs"));
-            verify(tarea).cancel(false);
+            assertEquals(420, ((Number) sllp.get("capacidadMaxima")).intValue());
+            verify(tarea, never()).cancel(false);
         } finally {
             handler.shutdown();
         }
@@ -383,8 +444,9 @@ class SimulacionCancelacionTest {
     void marcarColapsoEsIdempotenteYDetieneLaSesion() {
         SimulacionSesionEstado estado = nuevaSesion();
         estado.setSimId("sim-colapso");
-        EstadoColapso colapso = EstadoColapso.capacidad(
-                "SPIM", 100, 100, LocalDateTime.of(2026, 7, 27, 16, 0));
+        EstadoColapso colapso = EstadoColapso.sla(
+                10, LocalDateTime.of(2026, 7, 27, 15, 59),
+                LocalDateTime.of(2026, 7, 27, 16, 0));
 
         assertTrue(estado.marcarColapsada(colapso));
         assertFalse(estado.marcarColapsada(colapso));
@@ -403,10 +465,10 @@ class SimulacionCancelacionTest {
                 "RUTA-1", "SPIM", "SCEL", ms(27, 11, 0), ms(27, 13, 0),
                 1, 70, ms(27, 9, 0))));
 
-        EstadoColapso colapso =
-                estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 10, 0));
-        assertNotNull(colapso);
-        assertEquals(100, colapso.ocupacionActual());
+        OcupacionAeropuerto ocupacion = estado.calcularOcupacionesAeropuertos(
+                LocalDateTime.of(2026, 7, 27, 10, 0)).get("SPIM");
+        assertEquals(100, ocupacion.ocupacionActual());
+        assertNull(estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 10, 0)));
     }
 
     @Test
@@ -454,11 +516,10 @@ class SimulacionCancelacionTest {
         String clave = SimulacionSesionEstado.claveOcurrencia("RUTA-1", salida);
 
         assertEquals(java.util.Set.of(1), estado.liberarOcurrencia(clave, ms(27, 10, 0)));
-        EstadoColapso colapso =
-                estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 10, 0));
-        assertNotNull(colapso);
-        assertEquals("SPIM", colapso.codigoAeropuerto());
-        assertEquals(20, colapso.ocupacionActual());
+        OcupacionAeropuerto ocupacion = estado.calcularOcupacionesAeropuertos(
+                LocalDateTime.of(2026, 7, 27, 10, 0)).get("SPIM");
+        assertEquals(20, ocupacion.ocupacionActual());
+        assertNull(estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 10, 0)));
     }
 
     @Test
