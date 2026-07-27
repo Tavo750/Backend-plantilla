@@ -139,21 +139,6 @@ public class SimulacionPureService {
 
         List<Integer> pendientesIds = new ArrayList<>();
 
-        Map<String, Aeropuerto> aeropuertosAlns = dataAdapter.cargarAeropuertos();
-        if (aeropuertosAlns.isEmpty()) {
-            return resultadoVacio();
-        }
-
-        // Vuelos: ventana extendida 5 días para permitir rutas de largo alcance
-        List<com.plantilla.backend.modules.algoritmo.alns.model.Vuelo> vuelos =
-                dataAdapter.cargarVuelos(desde, hasta.plusDays(5));
-        excluirOcurrenciasCanceladas(vuelos, ocurrenciasCanceladas);
-        List<String> ocurrenciasDisponibles = clavesOcurrenciasDisponibles(vuelos);
-        if (vuelos.isEmpty()) {
-            log.info("Ventana SC [{}, {}] sin vuelos disponibles", desde, hasta);
-            return resultadoVacio();
-        }
-
         // Pool = arrastre vigente (SLA aún alcanzable) + nuevos registros de la ventana
         List<EnvioMaletas> candidatos = new ArrayList<>();
         int arrastreEntrante = 0;
@@ -170,6 +155,24 @@ public class SimulacionPureService {
         }
         candidatos.addAll(
                 envioMaletasRepository.findByFechaRegistroBetweenOrderByFechaRegistroAsc(desde, hasta));
+        List<Map<String, Object>> enviosDemanda = construirDemanda(candidatos);
+
+        Map<String, Aeropuerto> aeropuertosAlns = dataAdapter.cargarAeropuertos();
+        if (aeropuertosAlns.isEmpty()) {
+            return resultadoVacioConDemanda(enviosDemanda);
+        }
+
+        // Vuelos: ventana extendida 5 días para permitir rutas de largo alcance
+        List<com.plantilla.backend.modules.algoritmo.alns.model.Vuelo> vuelos =
+                dataAdapter.cargarVuelos(desde, hasta.plusDays(5));
+        excluirOcurrenciasCanceladas(vuelos, ocurrenciasCanceladas);
+        List<String> ocurrenciasDisponibles = clavesOcurrenciasDisponibles(vuelos);
+        if (vuelos.isEmpty()) {
+            log.info("Ventana SC [{}, {}] sin vuelos disponibles", desde, hasta);
+            Map<String, Object> r = resultadoVacioConDemanda(enviosDemanda);
+            r.put("ocurrenciasDisponibles", ocurrenciasDisponibles);
+            return r;
+        }
 
         // Tope de maletas físicas: el excedente NO se descarta, pasa como arrastre
         List<EnvioMaletas> enviosSC = new ArrayList<>();
@@ -186,7 +189,7 @@ public class SimulacionPureService {
 
         if (enviosSC.isEmpty()) {
             log.info("Ventana SC [{}, {}] sin envíos", desde, hasta);
-            Map<String, Object> r = resultadoVacio();
+            Map<String, Object> r = resultadoVacioConDemanda(enviosDemanda);
             r.put("pendientesIds", acotarArrastre(pendientesIds));
             r.put("ocurrenciasDisponibles", ocurrenciasDisponibles);
             return r;
@@ -198,7 +201,7 @@ public class SimulacionPureService {
                 .collect(Collectors.toList());
 
         if (maletas.isEmpty()) {
-            Map<String, Object> r = resultadoVacio();
+            Map<String, Object> r = resultadoVacioConDemanda(enviosDemanda);
             r.put("ocurrenciasDisponibles", ocurrenciasDisponibles);
             return r;
         }
@@ -304,7 +307,29 @@ public class SimulacionPureService {
         result.put("pendientesIds",   acotarArrastre(pendientesIds));
         result.put("arrastreEntrante", arrastreEntrante);
         result.put("ocurrenciasDisponibles", ocurrenciasDisponibles);
+        result.put("enviosDemanda", enviosDemanda);
         return result;
+    }
+
+    private List<Map<String, Object>> construirDemanda(List<EnvioMaletas> envios) {
+        Map<Integer, Map<String, Object>> unicos = new LinkedHashMap<>();
+        for (EnvioMaletas envio : envios) {
+            if (envio == null || envio.getIdEnvio() == null
+                    || envio.getAeropuertoOrigen() == null
+                    || envio.getFechaRegistro() == null) continue;
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("idEnvio", envio.getIdEnvio());
+            item.put("origen", envio.getAeropuertoOrigen().getCodigoOaci());
+            item.put("cantidad", envio.getCantidad() != null ? envio.getCantidad() : 1);
+            item.put("fechaRegistroMs",
+                    envio.getFechaRegistro().toInstant(ZoneOffset.UTC).toEpochMilli());
+            if (envio.getFechaLimiteEntrega() != null) {
+                item.put("fechaLimiteMs",
+                        envio.getFechaLimiteEntrega().toInstant(ZoneOffset.UTC).toEpochMilli());
+            }
+            unicos.put(envio.getIdEnvio(), item);
+        }
+        return new ArrayList<>(unicos.values());
     }
 
     private String claveOcurrencia(com.plantilla.backend.modules.algoritmo.alns.model.Vuelo vuelo) {
@@ -530,6 +555,13 @@ public class SimulacionPureService {
         r.put("pendientesIds",   Collections.emptyList());
         r.put("arrastreEntrante", 0);
         r.put("ocurrenciasDisponibles", Collections.emptyList());
+        r.put("enviosDemanda", Collections.emptyList());
+        return r;
+    }
+
+    private Map<String, Object> resultadoVacioConDemanda(List<Map<String, Object>> enviosDemanda) {
+        Map<String, Object> r = resultadoVacio();
+        r.put("enviosDemanda", enviosDemanda != null ? enviosDemanda : Collections.emptyList());
         return r;
     }
 }

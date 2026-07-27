@@ -201,10 +201,13 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
 
         // 2. Sincronizar el reloj al mismo instante que ve el líder
         long transcurridoRealMs = System.currentTimeMillis() - sim.getInicioRealMs();
-        enviar(session, Map.of(
-                "type",               "SYNC",
-                "transcurridoRealMs", transcurridoRealMs,
-                "finalizada",         sim.isFinalizada()));
+        Map<String, Object> sync = new LinkedHashMap<>();
+        sync.put("type", "SYNC");
+        sync.put("transcurridoRealMs", transcurridoRealMs);
+        sync.put("finalizada", sim.isFinalizada());
+        sync.put("colapsada", sim.isColapsada());
+        sync.put("estadoColapso", sim.getEstadoColapso());
+        enviar(session, sync);
 
         log.info("Sesion {} se unió a simulacion {} (buffer={} msgs)",
                 session.getId(), simId, copia.size());
@@ -314,6 +317,10 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             List<Map<String, Object>> vuelosEnAire =
                     (List<Map<String, Object>>) snapshot.getOrDefault("vuelosEnAire", List.of());
             estado.registrarOcurrenciasInit(vuelosEnAire);
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> aeropuertos =
+                    (List<Map<String, Object>>) snapshot.getOrDefault("aeropuertos", List.of());
+            estado.registrarCapacidades(aeropuertos);
 
             Map<String, Object> initMsg = new LinkedHashMap<>();
             initMsg.put("type",               "INIT");
@@ -322,6 +329,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             initMsg.put("K",             estado.getK());
             initMsg.put("vuelosEnAire",  snapshot.get("vuelosEnAire"));
             initMsg.put("aeropuertos",   snapshot.get("aeropuertos"));
+            initMsg.put("ocupacionesAeropuertos",
+                    estado.calcularOcupacionesAeropuertos(estado.getFechaInicio()));
 
             // Ancla del reloj ANTES de emitir INIT: así los joiners calculan bien el desfase
             estado.setInicioRealMs(System.currentTimeMillis());
@@ -347,6 +356,7 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     // ──────────────────────────────────────────────────────────
 
     private void productorTick(SimulacionSesionEstado estado) {
+        if (estado.isColapsada()) return;
         if (!estado.estaActiva()) {
             finalizarSim(estado, false);
             return;
@@ -370,7 +380,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                 : sesiones.containsKey(estado.getSessionId());
     }
 
-    private void ejecutarCiclo(SimulacionSesionEstado estado) {
+    void ejecutarCiclo(SimulacionSesionEstado estado) {
+        if (estado.isColapsada()) return;
         if (!estado.estaActiva()) {
             finalizarSim(estado, false);
             return;
@@ -395,6 +406,11 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     estado.getOcurrenciasCanceladas());
 
             @SuppressWarnings("unchecked")
+            List<Map<String, Object>> enviosDemanda =
+                    (List<Map<String, Object>>) resultado.getOrDefault("enviosDemanda", List.of());
+            estado.registrarDemanda(enviosDemanda);
+
+            @SuppressWarnings("unchecked")
             List<Integer> pendientes = (List<Integer>) resultado.getOrDefault("pendientesIds", List.of());
             estado.setArrastreIds(new ArrayList<>(pendientes));
 
@@ -408,12 +424,16 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     (List<Map<String, Object>>) resultado.getOrDefault("nuevosVuelos", List.of());
             estado.registrarResultados(nuevosVuelos);
 
+            Map<String, OcupacionAeropuerto> ocupaciones =
+                    estado.calcularOcupacionesAeropuertos(hasta);
+
             Map<String, Object> update = new LinkedHashMap<>();
             update.put("type",               "UPDATE");
             update.put("tiempoSimulacionMs",
                     hasta.toInstant(ZoneOffset.UTC).toEpochMilli());
             update.put("ciclo",        ciclo);
             update.put("nuevosVuelos", resultado.get("nuevosVuelos"));
+            update.put("ocupacionesAeropuertos", ocupaciones);
             update.put("estadisticas", Map.of(
                     "asignados",        resultado.get("asignados"),
                     "noAsignados",      resultado.get("noAsignados"),
@@ -423,31 +443,10 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             ));
             emitir(estado, update);
 
-            // Modo colapso — colapsa si alguna maleta queda SIN RUTA o llega FUERA DE SLA
-            if (estado.isModoColapso()) {
-                long asignados   = ((Number) resultado.get("asignados")).longValue();
-                long sinRuta     = ((Number) resultado.get("noAsignados")).longValue();
-                long fueraSla    = ((Number) resultado.getOrDefault("violacionesSla", 0)).longValue();
-                if (sinRuta > 0 || fueraSla > 0) {
-                    long total = asignados + sinRuta;
-                    double pct = total > 0 ? sinRuta * 100.0 / total : 0.0;
-                    long duracionMin = java.time.Duration
-                            .between(estado.getFechaInicio(), hasta).toMinutes();
-                    String motivo = (sinRuta > 0 ? sinRuta + " maleta(s) sin ruta posible" : "")
-                            + (sinRuta > 0 && fueraSla > 0 ? " · " : "")
-                            + (fueraSla > 0 ? fueraSla + " maleta(s) fuera de SLA" : "");
-                    emitir(estado, Map.of(
-                            "type",               "COLAPSO_DETECTADO",
-                            "tiempoColapsoMs",    hasta.toInstant(ZoneOffset.UTC).toEpochMilli(),
-                            "duracionSimMinutos", duracionMin,
-                            "pctNoAsignados",     Math.round(pct),
-                            "maletasSinRuta",     sinRuta,
-                            "maletasFueraSla",    fueraSla,
-                            "motivo",             motivo));
-                    emitir(estado, Map.of("type", "FIN", "ciclosCompletados", ciclo));
-                    finalizarSim(estado, false);
-                    return;
-                }
+            EstadoColapso colapso = estado.detectarColapso(hasta, ocupaciones);
+            if (colapso != null) {
+                detenerSimulacionPorColapso(estado, colapso, ciclo);
+                return;
             }
 
             if (ciclo >= SimulacionSesionEstado.MAX_CICLOS) {
@@ -460,6 +459,51 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             emitir(estado, Map.of("type", "ERROR", "mensaje", e.getMessage()));
             finalizarSim(estado, true);
         }
+    }
+
+    /**
+     * Marca y detiene una simulacion una sola vez. El evento queda en el buffer
+     * para que JOIN/SYNC pueda reconstruir el mismo estado colapsado.
+     */
+    private void detenerSimulacionPorColapso(
+            SimulacionSesionEstado estado, EstadoColapso colapso, int ciclo) {
+        if (!estado.marcarColapsada(colapso)) return;
+
+        Map<String, Object> evento = new LinkedHashMap<>();
+        evento.put("type", "COLAPSO_DETECTADO");
+        evento.put("simId", estado.getSimId());
+        evento.put("fechaSimulada", colapso.fechaColapso().toString());
+        evento.put("tiempoColapsoMs",
+                colapso.fechaColapso().toInstant(ZoneOffset.UTC).toEpochMilli());
+        evento.put("tiempoSimulacionMs",
+                colapso.fechaColapso().toInstant(ZoneOffset.UTC).toEpochMilli());
+        evento.put("duracionSimMinutos", java.time.Duration
+                .between(estado.getFechaInicio(), colapso.fechaColapso()).toMinutes());
+        evento.put("tipoColapso", colapso.tipo());
+        evento.put("mensaje", colapso.mensaje());
+        evento.put("motivo", colapso.mensaje());
+        evento.put("aeropuerto", colapso.codigoAeropuerto());
+        evento.put("ocupacionActual", colapso.ocupacionActual());
+        evento.put("capacidadMaxima", colapso.capacidadMaxima());
+        evento.put("idEnvio", colapso.idEnvio());
+        evento.put("fechaLimiteEntrega", colapso.fechaLimiteEntrega() != null
+                ? colapso.fechaLimiteEntrega().toString() : null);
+        emitir(estado, evento);
+
+        estado.setFinalizada(true);
+        if (estado.getTareaScheduled() != null) {
+            estado.getTareaScheduled().cancel(false);
+        }
+        String simId = estado.getSimId();
+        if (simId != null) {
+            scheduler.schedule(() -> simsCompartidas.remove(simId),
+                    RETENCION_FIN_MS, TimeUnit.MILLISECONDS);
+        } else {
+            sesiones.remove(estado.getSessionId());
+        }
+        log.warn("Simulacion {} detenida por colapso {} en ciclo {}: {}",
+                simId != null ? simId : estado.getSessionId(),
+                colapso.tipo(), ciclo, colapso.mensaje());
     }
 
     // ──────────────────────────────────────────────────────────
@@ -525,7 +569,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             }
             estado.registrarOcurrencia(clave);
             estado.getOcurrenciasCanceladas().add(clave);
-            Set<Integer> afectados = estado.liberarOcurrencia(clave);
+            Set<Integer> afectados = estado.liberarOcurrencia(
+                    clave, cancelacion.longValue());
             estado.agregarAlArrastre(afectados);
             LocalDate fechaOperacion = Instant.ofEpochMilli(salidaAfectadaMs).atZone(ZoneOffset.UTC).toLocalDate();
             LocalDate fechaCancelacion = Instant.ofEpochMilli(cancelacion.longValue()).atZone(ZoneOffset.UTC).toLocalDate();
@@ -581,6 +626,11 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     estado.getOcurrenciasCanceladas());
 
             @SuppressWarnings("unchecked")
+            List<Map<String, Object>> enviosDemanda =
+                    (List<Map<String, Object>>) resultado.getOrDefault("enviosDemanda", List.of());
+            estado.registrarDemanda(enviosDemanda);
+
+            @SuppressWarnings("unchecked")
             List<Integer> pendientes = (List<Integer>) resultado.getOrDefault("pendientesIds", List.of());
             estado.setArrastreIds(new java.util.ArrayList<>(pendientes));
 
@@ -594,6 +644,9 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     (List<Map<String, Object>>) resultado.getOrDefault("nuevosVuelos", List.of());
             estado.registrarResultados(nuevosVuelos);
 
+            Map<String, OcupacionAeropuerto> ocupaciones =
+                    estado.calcularOcupacionesAeropuertos(hasta);
+
             // Emitir UPDATE con las nuevas asignaciones (sin incrementar ciclo)
             Map<String, Object> update = new LinkedHashMap<>();
             update.put("type",               "UPDATE");
@@ -601,6 +654,7 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     hasta.toInstant(ZoneOffset.UTC).toEpochMilli());
             update.put("ciclo",        estado.getCiclosEjecutados()); // no incrementa
             update.put("nuevosVuelos", resultado.get("nuevosVuelos"));
+            update.put("ocupacionesAeropuertos", ocupaciones);
             update.put("estadisticas", Map.of(
                     "asignados",        resultado.get("asignados"),
                     "noAsignados",      resultado.get("noAsignados"),
@@ -609,6 +663,13 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     "ciclosTotales",    SimulacionSesionEstado.MAX_CICLOS
             ));
             emitir(estado, update);
+
+            EstadoColapso colapso = estado.detectarColapso(hasta, ocupaciones);
+            if (colapso != null) {
+                detenerSimulacionPorColapso(
+                        estado, colapso, estado.getCiclosEjecutados());
+                return;
+            }
 
             int asignados = ((Number) resultado.get("asignados")).intValue();
             int noAsignados = ((Number) resultado.get("noAsignados")).intValue();
