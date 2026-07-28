@@ -22,26 +22,30 @@ import java.util.concurrent.*;
  * Handler WebSocket para el módulo de simulación en tiempo real.
  *
  * Protocolo cliente → servidor:
- *   {"type":"START","fechaInicio":"2026-06-19","horaInicio":"09:00","K":120,"maxMaletasSC":1500}
- *   {"type":"LISTAR"}                 — pide la lista de simulaciones compartidas activas
- *   {"type":"JOIN","simId":"ab12cd34"} — se une a una simulación en curso
- *   {"type":"STOP"}
+ * {"type":"START","fechaInicio":"2026-06-19","horaInicio":"09:00","K":120,"maxMaletasSC":1500}
+ * {"type":"LISTAR"} — pide la lista de simulaciones compartidas activas
+ * {"type":"JOIN","simId":"ab12cd34"} — se une a una simulación en curso
+ * {"type":"STOP"}
  *
  * Protocolo servidor → cliente:
- *   INIT      — snapshot inicial (aviones en vuelo, aeropuertos)
- *   UPDATE    — resultado de cada ciclo ALNS (cada 5 min reales)
- *   LISTA_SIMS— lista de simulaciones compartidas activas
- *   SYNC      — al unirse: instante real transcurrido para alinear el reloj con el líder
- *   FIN       — simulación terminada (12 ciclos = 60 min reales = 5 días simulados)
- *   ERROR     — error irrecuperable
- *   STOPPED   — confirmación de STOP
+ * INIT — snapshot inicial (aviones en vuelo, aeropuertos)
+ * UPDATE — resultado de cada ciclo ALNS (cada 5 min reales)
+ * LISTA_SIMS— lista de simulaciones compartidas activas
+ * SYNC — al unirse: instante real transcurrido para alinear el reloj con el
+ * líder
+ * FIN — simulación terminada (12 ciclos = 60 min reales = 5 días simulados)
+ * ERROR — error irrecuperable
+ * STOPPED — confirmación de STOP
  *
  * Simulación COMPARTIDA (multi-dispositivo):
- *   Un START crea una simulación pública con un simId. Cada mensaje emitido se
- *   guarda en un búfer y se difunde a todas las sesiones suscritas. Otro dispositivo
- *   puede LISTAR y hacer JOIN: recibe el búfer completo (reconstruye el estado) y un
- *   SYNC que lo alinea al mismo instante que ve el líder. La interacción (pan/zoom/
- *   filtros/reloj local) es independiente en cada dispositivo.
+ * Un START crea una simulación pública con un simId. Cada mensaje emitido se
+ * guarda en un búfer y se difunde a todas las sesiones suscritas. Otro
+ * dispositivo
+ * puede LISTAR y hacer JOIN: recibe el búfer completo (reconstruye el estado) y
+ * un
+ * SYNC que lo alinea al mismo instante que ve el líder. La interacción
+ * (pan/zoom/
+ * filtros/reloj local) es independiente en cada dispositivo.
  */
 @Component
 @RequiredArgsConstructor
@@ -49,15 +53,18 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(SimulacionWebSocketHandler.class);
 
-    /** Tamaño de ventana por ciclo ALNS en segundos reales de reproducción (= K×5 min sim con K=120 → 10 hs sim) */
-    private static final int CICLO_REAL_SEG    = 300;
+    /**
+     * Tamaño de ventana por ciclo ALNS en segundos reales de reproducción (= K×5
+     * min sim con K=120 → 10 hs sim)
+     */
+    private static final int CICLO_REAL_SEG = 300;
     /** Sa: separación entre arranques de ciclos del planificador (3 min reales). */
-    private static final int SA_SEG            = 180;
+    private static final int SA_SEG = 180;
     /** Ráfaga inicial: ventanas planificadas de corrido al arrancar (colchón) */
-    private static final int RAFAGA_INICIAL    = 2;
+    private static final int RAFAGA_INICIAL = 2;
     /** Frecuencia con la que el productor revisa si toca arrancar otro ciclo */
-    private static final int CHECK_BUFER_SEG   = 10;
-    private static final int K_DEFAULT         = 120;
+    private static final int CHECK_BUFER_SEG = 10;
+    private static final int K_DEFAULT = 120;
     /**
      * Tope de maletas procesadas por ventana ALNS. Debe superar la demanda por
      * ventana o el resto se difiere al arrastre y termina descartándose.
@@ -67,26 +74,34 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
      * demanda total y el 59 % restante se perdía. 25 000 cubre el pico por ventana
      * con margen; si el greedy asigna todo, el ALNS ni siquiera se ejecuta.
      */
-    private static final int SC_DEFAULT        = 25000;
-    /** Tras terminar, la simulación compartida se retiene este tiempo para joiners tardíos */
+    private static final int SC_DEFAULT = 25000;
+    /**
+     * Tras terminar, la simulación compartida se retiene este tiempo para joiners
+     * tardíos
+     */
     private static final long RETENCION_FIN_MS = 15 * 60 * 1000L;
 
-    /** Sesiones NO compartidas ligadas a su propietario (p.ej. simulación de colapso) */
+    /**
+     * Sesiones NO compartidas ligadas a su propietario (p.ej. simulación de
+     * colapso)
+     */
     private final Map<String, SimulacionSesionEstado> sesiones = new ConcurrentHashMap<>();
     /** Simulaciones compartidas activas, por simId */
     private final Map<String, SimulacionSesionEstado> simsCompartidas = new ConcurrentHashMap<>();
-    /** sessionId → simId de la simulación que esa sesión está viendo (para desuscribir al cerrar) */
+    /**
+     * sessionId → simId de la simulación que esa sesión está viendo (para
+     * desuscribir al cerrar)
+     */
     private final Map<String, String> sesionASim = new ConcurrentHashMap<>();
 
-    private final ScheduledExecutorService scheduler =
-            Executors.newScheduledThreadPool(4, r -> {
-                Thread t = new Thread(r, "sim-worker");
-                t.setDaemon(true);
-                return t;
-            });
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4, r -> {
+        Thread t = new Thread(r, "sim-worker");
+        t.setDaemon(true);
+        return t;
+    });
 
     private final SimulacionPureService simulacionService;
-    private final ObjectMapper          objectMapper;
+    private final ObjectMapper objectMapper;
     private final com.plantilla.backend.modules.simulacion.service.ColapsoEstimadorService colapsoEstimador;
 
     // ──────────────────────────────────────────────────────────
@@ -105,7 +120,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
         String simId = sesionASim.remove(session.getId());
         if (simId != null) {
             SimulacionSesionEstado sim = simsCompartidas.get(simId);
-            if (sim != null) sim.getSuscriptores().remove(session);
+            if (sim != null)
+                sim.getSuscriptores().remove(session);
         }
         // Simulaciones NO compartidas (colapso) mueren con su sesión.
         SimulacionSesionEstado propia = sesiones.get(session.getId());
@@ -138,10 +154,12 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                 String sid = sesionASim.remove(session.getId());
                 if (sid != null) {
                     SimulacionSesionEstado sim = simsCompartidas.get(sid);
-                    if (sim != null) sim.getSuscriptores().remove(session);
+                    if (sim != null)
+                        sim.getSuscriptores().remove(session);
                 }
                 SimulacionSesionEstado propia = sesiones.get(session.getId());
-                if (propia != null && propia.getSimId() == null) detenerSesion(session.getId());
+                if (propia != null && propia.getSimId() == null)
+                    detenerSesion(session.getId());
                 enviar(session, Map.of("type", "STOPPED"));
             }
         } catch (Exception e) {
@@ -158,11 +176,13 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
         desuscribir(session);
 
         String fechaInicioStr = (String) msg.getOrDefault("fechaInicio", "2026-01-02");
-        String horaInicioStr  = (String) msg.getOrDefault("horaInicio",  "00:00");
+        String horaInicioStr = (String) msg.getOrDefault("horaInicio", "00:00");
         int K = msg.containsKey("K")
-                ? ((Number) msg.get("K")).intValue() : K_DEFAULT;
+                ? ((Number) msg.get("K")).intValue()
+                : K_DEFAULT;
         int maxMaletasSC = msg.containsKey("maxMaletasSC")
-                ? ((Number) msg.get("maxMaletasSC")).intValue() : SC_DEFAULT;
+                ? ((Number) msg.get("maxMaletasSC")).intValue()
+                : SC_DEFAULT;
 
         LocalDateTime fechaInicio = LocalDateTime.parse(
                 fechaInicioStr + "T" + horaInicioStr + ":00");
@@ -206,20 +226,27 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
         synchronized (sim.getMensajesBuffer()) {
             copia = new ArrayList<>(sim.getMensajesBuffer());
         }
-        for (String json : copia) enviarRaw(session, json);
+        for (String json : copia)
+            enviarRaw(session, json);
 
         // 2. Sincronizar el reloj al mismo instante que ve el líder
         long transcurridoRealMs = System.currentTimeMillis() - sim.getInicioRealMs();
-        enviar(session, Map.of(
-                "type",               "SYNC",
-                "transcurridoRealMs", transcurridoRealMs,
-                "finalizada",         sim.isFinalizada()));
+        Map<String, Object> sync = new LinkedHashMap<>();
+        sync.put("type", "SYNC");
+        sync.put("transcurridoRealMs", transcurridoRealMs);
+        sync.put("finalizada", sim.isFinalizada());
+        sync.put("colapsada", sim.isColapsada());
+        sync.put("estadoColapso", sim.getEstadoColapso());
+        enviar(session, sync);
 
         log.info("Sesion {} se unió a simulacion {} (buffer={} msgs)",
                 session.getId(), simId, copia.size());
     }
 
-    /** Lista de simulaciones compartidas para el endpoint REST y el mensaje LISTA_SIMS. */
+    /**
+     * Lista de simulaciones compartidas para el endpoint REST y el mensaje
+     * LISTA_SIMS.
+     */
     public List<Map<String, Object>> listarActivas() {
         return snapshotActivas();
     }
@@ -229,14 +256,15 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
         // Defensivo: un fallo puntual en una simulación no debe tumbar toda la lista
         for (SimulacionSesionEstado e : simsCompartidas.values()) {
             try {
-                if (e == null) continue;
+                if (e == null)
+                    continue;
                 Map<String, Object> m = new LinkedHashMap<>();
-                m.put("simId",        e.getSimId());
-                m.put("fechaInicio",  e.getFechaInicio() != null ? e.getFechaInicio().toLocalDate().toString() : "");
-                m.put("horaInicio",   e.getHoraInicio() != null ? e.getHoraInicio() : "00:00");
-                m.put("cicloActual",  e.getCiclosEjecutados());
-                m.put("maxCiclos",    SimulacionSesionEstado.MAX_CICLOS);
-                m.put("finalizada",   e.isFinalizada());
+                m.put("simId", e.getSimId());
+                m.put("fechaInicio", e.getFechaInicio() != null ? e.getFechaInicio().toLocalDate().toString() : "");
+                m.put("horaInicio", e.getHoraInicio() != null ? e.getHoraInicio() : "00:00");
+                m.put("cicloActual", e.getCiclosEjecutados());
+                m.put("maxCiclos", SimulacionSesionEstado.MAX_CICLOS);
+                m.put("finalizada", e.isFinalizada());
                 m.put("espectadores", e.getSuscriptores() != null ? e.getSuscriptores().size() : 0);
                 out.add(m);
             } catch (Exception ex) {
@@ -250,7 +278,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
         String simIdPrevio = sesionASim.remove(session.getId());
         if (simIdPrevio != null) {
             SimulacionSesionEstado sim = simsCompartidas.get(simIdPrevio);
-            if (sim != null) sim.getSuscriptores().remove(session);
+            if (sim != null)
+                sim.getSuscriptores().remove(session);
         }
         SimulacionSesionEstado propia = sesiones.get(session.getId());
         if (propia != null && propia.getSimId() == null) {
@@ -267,9 +296,11 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
         detenerSesion(session.getId());
 
         int K = msg.containsKey("K")
-                ? ((Number) msg.get("K")).intValue() : K_DEFAULT;
+                ? ((Number) msg.get("K")).intValue()
+                : K_DEFAULT;
         int maxMaletasSC = msg.containsKey("maxMaletasSC")
-                ? ((Number) msg.get("maxMaletasSC")).intValue() : SC_DEFAULT;
+                ? ((Number) msg.get("maxMaletasSC")).intValue()
+                : SC_DEFAULT;
 
         scheduler.submit(() -> {
             try {
@@ -283,7 +314,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                         msg2 -> enviar(session, Map.of("type", "BUSCANDO_COLAPSO", "mensaje", msg2)));
                 if (fechaColapso == null) {
                     enviar(session, Map.of("type", "ERROR",
-                            "mensaje", "No se encontró colapso: el planificador cubre toda la demanda sin maletas sin ruta ni fuera de SLA."));
+                            "mensaje",
+                            "No se encontró colapso: el planificador cubre toda la demanda sin maletas sin ruta ni fuera de SLA."));
                     return;
                 }
 
@@ -296,11 +328,11 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                 sesiones.put(session.getId(), estado);
 
                 enviar(session, Map.of(
-                        "type",                   "INICIO_COLAPSO",
+                        "type", "INICIO_COLAPSO",
                         "fechaColapsoEstimadaMs", fechaColapso.toInstant(ZoneOffset.UTC).toEpochMilli(),
-                        "fechaInicioSimMs",       inicioSim.toInstant(ZoneOffset.UTC).toEpochMilli(),
-                        "maxCiclos",              SimulacionSesionEstado.MAX_CICLOS,
-                        "cacheado",               cacheado));
+                        "fechaInicioSimMs", inicioSim.toInstant(ZoneOffset.UTC).toEpochMilli(),
+                        "maxCiclos", SimulacionSesionEstado.MAX_CICLOS,
+                        "cacheado", cacheado));
 
                 iniciarSimulacion(estado);
 
@@ -315,24 +347,31 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
 
     private void iniciarSimulacion(SimulacionSesionEstado estado) {
         try {
-            // 1. Snapshot inicial: aviones YA en vuelo a la fecha/hora elegida (vacíos) + aeropuertos
-            Map<String, Object> snapshot =
-                    simulacionService.construirSnapshotInicial(estado.getFechaInicio());
+            // 1. Snapshot inicial: aviones YA en vuelo a la fecha/hora elegida (vacíos) +
+            // aeropuertos
+            Map<String, Object> snapshot = simulacionService.construirSnapshotInicial(estado.getFechaInicio());
 
             @SuppressWarnings("unchecked")
-            List<Map<String, Object>> vuelosEnAire =
-                    (List<Map<String, Object>>) snapshot.getOrDefault("vuelosEnAire", List.of());
+            List<Map<String, Object>> vuelosEnAire = (List<Map<String, Object>>) snapshot.getOrDefault("vuelosEnAire",
+                    List.of());
             estado.registrarOcurrenciasInit(vuelosEnAire);
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> aeropuertos = (List<Map<String, Object>>) snapshot.getOrDefault("aeropuertos",
+                    List.of());
+            estado.registrarCapacidades(aeropuertos);
 
             Map<String, Object> initMsg = new LinkedHashMap<>();
-            initMsg.put("type",               "INIT");
+            initMsg.put("type", "INIT");
             initMsg.put("tiempoSimulacionMs",
                     estado.getFechaInicio().toInstant(ZoneOffset.UTC).toEpochMilli());
-            initMsg.put("K",             estado.getK());
-            initMsg.put("vuelosEnAire",  snapshot.get("vuelosEnAire"));
-            initMsg.put("aeropuertos",   snapshot.get("aeropuertos"));
+            initMsg.put("K", estado.getK());
+            initMsg.put("vuelosEnAire", snapshot.get("vuelosEnAire"));
+            initMsg.put("aeropuertos", snapshot.get("aeropuertos"));
+            initMsg.put("ocupacionesAeropuertos",
+                    estado.calcularOcupacionesAeropuertos(estado.getFechaInicio()));
 
-            // Ancla del reloj ANTES de emitir INIT: así los joiners calculan bien el desfase
+            // Ancla del reloj ANTES de emitir INIT: así los joiners calculan bien el
+            // desfase
             estado.setInicioRealMs(System.currentTimeMillis());
             emitir(estado, initMsg);
 
@@ -356,6 +395,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     // ──────────────────────────────────────────────────────────
 
     private void productorTick(SimulacionSesionEstado estado) {
+        if (estado.isColapsada())
+            return;
         if (!estado.estaActiva()) {
             finalizarSim(estado, false);
             return;
@@ -379,7 +420,9 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                 : sesiones.containsKey(estado.getSessionId());
     }
 
-    private void ejecutarCiclo(SimulacionSesionEstado estado) {
+    void ejecutarCiclo(SimulacionSesionEstado estado) {
+        if (estado.isColapsada())
+            return;
         if (!estado.estaActiva()) {
             finalizarSim(estado, false);
             return;
@@ -404,59 +447,49 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     estado.getOcurrenciasCanceladas());
 
             @SuppressWarnings("unchecked")
+            List<Map<String, Object>> enviosDemanda = (List<Map<String, Object>>) resultado
+                    .getOrDefault("enviosDemanda", List.of());
+            estado.registrarDemanda(enviosDemanda);
+
+            @SuppressWarnings("unchecked")
             List<Integer> pendientes = (List<Integer>) resultado.getOrDefault("pendientesIds", List.of());
             estado.setArrastreIds(new ArrayList<>(pendientes));
 
             @SuppressWarnings("unchecked")
-            List<String> ocurrenciasDisponibles =
-                    (List<String>) resultado.getOrDefault("ocurrenciasDisponibles", List.of());
+            List<String> ocurrenciasDisponibles = (List<String>) resultado.getOrDefault("ocurrenciasDisponibles",
+                    List.of());
             estado.registrarOcurrencias(ocurrenciasDisponibles);
 
             @SuppressWarnings("unchecked")
-            List<Map<String, Object>> nuevosVuelos =
-                    (List<Map<String, Object>>) resultado.getOrDefault("nuevosVuelos", List.of());
+            List<Map<String, Object>> nuevosVuelos = (List<Map<String, Object>>) resultado.getOrDefault("nuevosVuelos",
+                    List.of());
             estado.registrarResultados(nuevosVuelos);
 
+            long tiempoSimulacionMs = estado.tiempoSimuladoActualMs(System.currentTimeMillis());
+            LocalDateTime tiempoSimulado = LocalDateTime.ofInstant(
+                    Instant.ofEpochMilli(tiempoSimulacionMs), ZoneOffset.UTC);
+            Map<String, OcupacionAeropuerto> ocupaciones = estado.calcularOcupacionesAeropuertos(tiempoSimulado);
+
             Map<String, Object> update = new LinkedHashMap<>();
-            update.put("type",               "UPDATE");
-            update.put("tiempoSimulacionMs",
+            update.put("type", "UPDATE");
+            update.put("tiempoSimulacionMs", tiempoSimulacionMs);
+            update.put("finVentanaMs",
                     hasta.toInstant(ZoneOffset.UTC).toEpochMilli());
-            update.put("ciclo",        ciclo);
+            update.put("ciclo", ciclo);
             update.put("nuevosVuelos", resultado.get("nuevosVuelos"));
+            update.put("ocupacionesAeropuertos", ocupaciones);
             update.put("estadisticas", Map.of(
-                    "asignados",        resultado.get("asignados"),
-                    "noAsignados",      resultado.get("noAsignados"),
-                    "enArrastre",       pendientes.size(),
+                    "asignados", resultado.get("asignados"),
+                    "noAsignados", resultado.get("noAsignados"),
+                    "enArrastre", pendientes.size(),
                     "ciclosCompletados", ciclo,
-                    "ciclosTotales",    SimulacionSesionEstado.MAX_CICLOS
-            ));
+                    "ciclosTotales", SimulacionSesionEstado.MAX_CICLOS));
             emitir(estado, update);
 
-            // Modo colapso — colapsa si alguna maleta queda SIN RUTA o llega FUERA DE SLA
-            if (estado.isModoColapso()) {
-                long asignados   = ((Number) resultado.get("asignados")).longValue();
-                long sinRuta     = ((Number) resultado.get("noAsignados")).longValue();
-                long fueraSla    = ((Number) resultado.getOrDefault("violacionesSla", 0)).longValue();
-                if (sinRuta > 0 || fueraSla > 0) {
-                    long total = asignados + sinRuta;
-                    double pct = total > 0 ? sinRuta * 100.0 / total : 0.0;
-                    long duracionMin = java.time.Duration
-                            .between(estado.getFechaInicio(), hasta).toMinutes();
-                    String motivo = (sinRuta > 0 ? sinRuta + " maleta(s) sin ruta posible" : "")
-                            + (sinRuta > 0 && fueraSla > 0 ? " · " : "")
-                            + (fueraSla > 0 ? fueraSla + " maleta(s) fuera de SLA" : "");
-                    emitir(estado, Map.of(
-                            "type",               "COLAPSO_DETECTADO",
-                            "tiempoColapsoMs",    hasta.toInstant(ZoneOffset.UTC).toEpochMilli(),
-                            "duracionSimMinutos", duracionMin,
-                            "pctNoAsignados",     Math.round(pct),
-                            "maletasSinRuta",     sinRuta,
-                            "maletasFueraSla",    fueraSla,
-                            "motivo",             motivo));
-                    emitir(estado, Map.of("type", "FIN", "ciclosCompletados", ciclo));
-                    finalizarSim(estado, false);
-                    return;
-                }
+            EstadoColapso colapso = estado.detectarColapso(tiempoSimulacionMs);
+            if (colapso != null) {
+                detenerSimulacionPorColapso(estado, colapso, ciclo);
+                return;
             }
 
             if (ciclo >= SimulacionSesionEstado.MAX_CICLOS) {
@@ -471,11 +504,64 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
+    /**
+     * Marca y detiene una simulacion una sola vez. El evento queda en el buffer
+     * para que JOIN/SYNC pueda reconstruir el mismo estado colapsado.
+     */
+    private void detenerSimulacionPorColapso(
+            SimulacionSesionEstado estado, EstadoColapso colapso, int ciclo) {
+        if (!estado.marcarColapsada(colapso))
+            return;
+
+        Map<String, Object> evento = new LinkedHashMap<>();
+        evento.put("type", "COLAPSO_DETECTADO");
+        evento.put("simId", estado.getSimId());
+        evento.put("fechaSimulada", colapso.fechaColapso().toString());
+        evento.put("tiempoColapsoMs",
+                colapso.fechaColapso().toInstant(ZoneOffset.UTC).toEpochMilli());
+        evento.put("tiempoSimulacionMs",
+                colapso.fechaColapso().toInstant(ZoneOffset.UTC).toEpochMilli());
+        evento.put("duracionSimMinutos", java.time.Duration
+                .between(estado.getFechaInicio(), colapso.fechaColapso()).toMinutes());
+        evento.put("tipoColapso", colapso.tipo());
+        evento.put("mensaje", colapso.mensaje());
+        evento.put("motivo", colapso.mensaje());
+        evento.put("aeropuerto", colapso.codigoAeropuerto());
+        evento.put("ocupacionActual", colapso.ocupacionActual());
+        evento.put("capacidadMaxima", colapso.capacidadMaxima());
+        evento.put("idEnvio", colapso.idEnvio());
+        evento.put("fechaLimiteEntrega", colapso.fechaLimiteEntrega() != null
+                ? colapso.fechaLimiteEntrega().toString()
+                : null);
+        evento.put("fechaLimiteEntregaMs", colapso.fechaLimiteEntrega() != null
+                ? colapso.fechaLimiteEntrega()
+                        .toInstant(ZoneOffset.UTC).toEpochMilli()
+                : null);
+        emitir(estado, evento);
+
+        estado.setFinalizada(true);
+        if (estado.getTareaScheduled() != null) {
+            estado.getTareaScheduled().cancel(false);
+        }
+        String simId = estado.getSimId();
+        if (simId != null) {
+            scheduler.schedule(() -> simsCompartidas.remove(simId),
+                    RETENCION_FIN_MS, TimeUnit.MILLISECONDS);
+        } else {
+            sesiones.remove(estado.getSessionId());
+        }
+        log.warn("Simulacion {} detenida por colapso {} en ciclo {}: {}",
+                simId != null ? simId : estado.getSessionId(),
+                colapso.tipo(), ciclo, colapso.mensaje());
+    }
+
     // ──────────────────────────────────────────────────────────
     // Utilidades
     // ──────────────────────────────────────────────────────────
 
-    /** Cancela una ocurrencia sólo en el estado temporal de la simulación observada. */
+    /**
+     * Cancela una ocurrencia sólo en el estado temporal de la simulación observada.
+     */
     private void manejarCancelFlight(WebSocketSession session, Map<String, Object> msg) {
         String codigo = msg.get("codigoVuelo") instanceof String s ? s : null;
         String simId = sesionASim.get(session.getId());
@@ -501,8 +587,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             }
             LocalDateTime finHorizonte = estado.getFechaInicio().plusMinutes(
                     (long) estado.getK() * CICLO_REAL_SEG / 60 * SimulacionSesionEstado.MAX_CICLOS);
-            Optional<SimulacionPureService.OcurrenciaCancelacion> ocurrencia =
-                    simulacionService.resolverOcurrenciaCancelacion(
+            Optional<SimulacionPureService.OcurrenciaCancelacion> ocurrencia = simulacionService
+                    .resolverOcurrenciaCancelacion(
                             codigo, cancelacion.longValue(), finHorizonte,
                             estado.getOcurrenciasCanceladas());
             if (ocurrencia.isEmpty()) {
@@ -517,8 +603,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             boolean existePersistida = simulacionService.existeOcurrencia(codigoAfectado, salidaAfectadaMs);
             log.debug("ORIGEN VUELO CANCELADO: {}", estado.origenOcurrencia(clave));
             log.debug("CANCEL DEBUG codigo={} seleccionadaMs={} seleccionadaUtc={} "
-                            + "simuladaMs={} simuladaUtc={} afectadaMs={} afectadaUtc={} clave={} "
-                            + "conocida={} existePersistida={} ciclos={}",
+                    + "simuladaMs={} simuladaUtc={} afectadaMs={} afectadaUtc={} clave={} "
+                    + "conocida={} existePersistida={} ciclos={}",
                     codigoAfectado, salida.longValue(), Instant.ofEpochMilli(salida.longValue()),
                     cancelacion.longValue(), Instant.ofEpochMilli(cancelacion.longValue()),
                     salidaAfectadaMs, Instant.ofEpochMilli(salidaAfectadaMs), clave,
@@ -534,10 +620,12 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             }
             estado.registrarOcurrencia(clave);
             estado.getOcurrenciasCanceladas().add(clave);
-            Set<Integer> afectados = estado.liberarOcurrencia(clave);
+            Set<Integer> afectados = estado.liberarOcurrencia(
+                    clave, cancelacion.longValue());
             estado.agregarAlArrastre(afectados);
             LocalDate fechaOperacion = Instant.ofEpochMilli(salidaAfectadaMs).atZone(ZoneOffset.UTC).toLocalDate();
-            LocalDate fechaCancelacion = Instant.ofEpochMilli(cancelacion.longValue()).atZone(ZoneOffset.UTC).toLocalDate();
+            LocalDate fechaCancelacion = Instant.ofEpochMilli(cancelacion.longValue()).atZone(ZoneOffset.UTC)
+                    .toLocalDate();
             Map<String, Object> evento = new LinkedHashMap<>();
             evento.put("type", "FLIGHT_CANCELLED");
             evento.put("codigoVuelo", codigoAfectado);
@@ -550,7 +638,7 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
             emitir(estado, evento);
 
             // ── Replanificación inmediata: ejecutar un ciclo ALNS extra para
-            //    reasignar las maletas del vuelo cancelado a vuelos alternativos ──
+            // reasignar las maletas del vuelo cancelado a vuelos alternativos ──
             if (!afectados.isEmpty()) {
                 ejecutarCicloReplanificacion(estado, afectados, codigoAfectado, salidaAfectadaMs);
             }
@@ -566,14 +654,16 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     }
 
     /**
-     * Ejecuta un ciclo ALNS extra de replanificación inmediata tras cancelar un vuelo.
+     * Ejecuta un ciclo ALNS extra de replanificación inmediata tras cancelar un
+     * vuelo.
      * No incrementa el contador de ciclos de la simulación.
-     * Usa la ventana actual del puntero de simulación para buscar vuelos alternativos.
+     * Usa la ventana actual del puntero de simulación para buscar vuelos
+     * alternativos.
      */
     private void ejecutarCicloReplanificacion(SimulacionSesionEstado estado,
-                                              Set<Integer> afectados,
-                                              String codigoVueloCancelado,
-                                              long salidaAfectadaMs) {
+            Set<Integer> afectados,
+            String codigoVueloCancelado,
+            long salidaAfectadaMs) {
         try {
             long cicloSimMinutos = (long) estado.getK() * CICLO_REAL_SEG / 60;
 
@@ -593,48 +683,52 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
                     estado.getOcurrenciasCanceladas());
 
             @SuppressWarnings("unchecked")
+            List<Map<String, Object>> enviosDemanda = (List<Map<String, Object>>) resultado
+                    .getOrDefault("enviosDemanda", List.of());
+            estado.registrarDemanda(enviosDemanda);
+
+            @SuppressWarnings("unchecked")
             List<Integer> pendientes = (List<Integer>) resultado.getOrDefault("pendientesIds", List.of());
             estado.setArrastreIds(new java.util.ArrayList<>(pendientes));
 
             @SuppressWarnings("unchecked")
-            List<String> ocurrenciasDisponibles =
-                    (List<String>) resultado.getOrDefault("ocurrenciasDisponibles", List.of());
+            List<String> ocurrenciasDisponibles = (List<String>) resultado.getOrDefault("ocurrenciasDisponibles",
+                    List.of());
             estado.registrarOcurrencias(ocurrenciasDisponibles);
 
             @SuppressWarnings("unchecked")
-            List<Map<String, Object>> nuevosVuelos =
-                    (List<Map<String, Object>>) resultado.getOrDefault("nuevosVuelos", List.of());
+            List<Map<String, Object>> nuevosVuelos = (List<Map<String, Object>>) resultado.getOrDefault("nuevosVuelos",
+                    List.of());
             estado.registrarResultados(nuevosVuelos);
 
-            // ── Envíos afectados que NO se pudieron reasignar en este ciclo ──
-            //    No aparecen en nuevosVuelos (solo lleva los asignados), así que sin
-            //    esto desaparecerían del buscador. Se emiten para que el frontend los
-            //    muestre como el tramo cancelado de su vuelo original (pendiente de
-            //    replanificación) en vez de dejarlos sin ningún estado.
-            Set<Integer> reasignados = idsEnviosDeNuevosVuelos(nuevosVuelos);
-            List<Integer> noReasignados = afectados.stream()
-                    .filter(id -> !reasignados.contains(id))
-                    .collect(java.util.stream.Collectors.toList());
-            List<Map<String, Object>> enviosNoReasignados =
-                    simulacionService.detalleEnviosNoReasignados(
-                            noReasignados, codigoVueloCancelado, salidaAfectadaMs);
+            long tiempoSimulacionMs = estado.tiempoSimuladoActualMs(System.currentTimeMillis());
+            LocalDateTime tiempoSimulado = LocalDateTime.ofInstant(
+                    Instant.ofEpochMilli(tiempoSimulacionMs), ZoneOffset.UTC);
+            Map<String, OcupacionAeropuerto> ocupaciones = estado.calcularOcupacionesAeropuertos(tiempoSimulado);
 
             // Emitir UPDATE con las nuevas asignaciones (sin incrementar ciclo)
             Map<String, Object> update = new LinkedHashMap<>();
-            update.put("type",               "UPDATE");
-            update.put("tiempoSimulacionMs",
+            update.put("type", "UPDATE");
+            update.put("tiempoSimulacionMs", tiempoSimulacionMs);
+            update.put("finVentanaMs",
                     hasta.toInstant(ZoneOffset.UTC).toEpochMilli());
-            update.put("ciclo",        estado.getCiclosEjecutados()); // no incrementa
+            update.put("ciclo", estado.getCiclosEjecutados()); // no incrementa
             update.put("nuevosVuelos", resultado.get("nuevosVuelos"));
-            update.put("enviosNoReasignados", enviosNoReasignados);
+            update.put("ocupacionesAeropuertos", ocupaciones);
             update.put("estadisticas", Map.of(
-                    "asignados",        resultado.get("asignados"),
-                    "noAsignados",      resultado.get("noAsignados"),
-                    "enArrastre",       pendientes.size(),
+                    "asignados", resultado.get("asignados"),
+                    "noAsignados", resultado.get("noAsignados"),
+                    "enArrastre", pendientes.size(),
                     "ciclosCompletados", estado.getCiclosEjecutados(),
-                    "ciclosTotales",    SimulacionSesionEstado.MAX_CICLOS
-            ));
+                    "ciclosTotales", SimulacionSesionEstado.MAX_CICLOS));
             emitir(estado, update);
+
+            EstadoColapso colapso = estado.detectarColapso(tiempoSimulacionMs);
+            if (colapso != null) {
+                detenerSimulacionPorColapso(
+                        estado, colapso, estado.getCiclosEjecutados());
+                return;
+            }
 
             int asignados = ((Number) resultado.get("asignados")).intValue();
             int noAsignados = ((Number) resultado.get("noAsignados")).intValue();
@@ -651,10 +745,12 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     /** Extrae los idEnvio ya reasignados presentes en la lista de nuevosVuelos. */
     private Set<Integer> idsEnviosDeNuevosVuelos(List<Map<String, Object>> nuevosVuelos) {
         Set<Integer> ids = new HashSet<>();
-        if (nuevosVuelos == null) return ids;
+        if (nuevosVuelos == null)
+            return ids;
         for (Map<String, Object> vuelo : nuevosVuelos) {
             Object enviosObj = vuelo.get("envios");
-            if (!(enviosObj instanceof List<?> envios)) continue;
+            if (!(enviosObj instanceof List<?> envios))
+                continue;
             for (Object envioObj : envios) {
                 if (envioObj instanceof Map<?, ?> envio
                         && envio.get("idEnvio") instanceof Number id) {
@@ -668,7 +764,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     /** Termina la simulación y cancela su tarea programada. */
     private void finalizarSim(SimulacionSesionEstado estado, boolean inmediato) {
         estado.setFinalizada(true);
-        if (estado.getTareaScheduled() != null) estado.getTareaScheduled().cancel(false);
+        if (estado.getTareaScheduled() != null)
+            estado.getTareaScheduled().cancel(false);
         sesiones.remove(estado.getSessionId());
         String simId = estado.getSimId();
         if (simId != null) {
@@ -688,7 +785,10 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    /** Serializa el mensaje una vez, lo guarda en el búfer y lo difunde a todos los suscriptores. */
+    /**
+     * Serializa el mensaje una vez, lo guarda en el búfer y lo difunde a todos los
+     * suscriptores.
+     */
     private void emitir(SimulacionSesionEstado estado, Object payload) {
         String json;
         try {
@@ -704,7 +804,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void enviarRaw(WebSocketSession session, String json) {
-        if (session == null || !session.isOpen()) return;
+        if (session == null || !session.isOpen())
+            return;
         try {
             synchronized (session) {
                 session.sendMessage(new TextMessage(json));
@@ -716,7 +817,8 @@ public class SimulacionWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void enviar(WebSocketSession session, Object payload) {
-        if (session == null || !session.isOpen()) return;
+        if (session == null || !session.isOpen())
+            return;
         try {
             enviarRaw(session, objectMapper.writeValueAsString(payload));
         } catch (Exception e) {

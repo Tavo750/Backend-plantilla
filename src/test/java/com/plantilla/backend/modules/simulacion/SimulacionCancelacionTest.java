@@ -1,5 +1,6 @@
 package com.plantilla.backend.modules.simulacion;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.WebSocketSession;
 import com.plantilla.backend.modules.envio.repository.EnvioMaletasRepository;
@@ -11,8 +12,12 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.concurrent.ScheduledFuture;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.*;
 
@@ -225,6 +230,299 @@ class SimulacionCancelacionTest {
     }
 
     @Test
+    void capacidadIgualOSuperiorNuncaGeneraColapso() {
+        LocalDateTime ahora = LocalDateTime.of(2026, 7, 27, 16, 0);
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarCapacidades(
+                List.of(Map.of("codigoOaci", "SPIM", "capacidad", 100)));
+        estado.registrarDemanda(
+                List.of(demanda(1, "SPIM", 101, ms(27, 15, 0))));
+
+        OcupacionAeropuerto ocupacion =
+                estado.calcularOcupacionesAeropuertos(ahora).get("SPIM");
+        assertEquals(101, ocupacion.ocupacionActual());
+        assertEquals(101.0, ocupacion.porcentaje());
+        assertNull(estado.detectarColapso(ahora));
+    }
+
+    @Test
+    void snapshotVisibleUsa419De420YNoColapsa() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarCapacidades(
+                List.of(Map.of("codigoOaci", "SLLP", "capacidad", 420)));
+        estado.registrarDemanda(
+                List.of(demanda(1, "SLLP", 419, ms(27, 9, 0))));
+        LocalDateTime ahora = LocalDateTime.of(2026, 7, 27, 10, 0);
+
+        Map<String, OcupacionAeropuerto> snapshot =
+                estado.calcularOcupacionesAeropuertos(ahora);
+
+        assertEquals(419, snapshot.get("SLLP").ocupacionActual());
+        assertEquals(420, snapshot.get("SLLP").capacidadMaxima());
+        assertEquals(99.76, snapshot.get("SLLP").porcentaje());
+        assertNull(estado.detectarColapso(ahora, snapshot));
+    }
+
+    @Test
+    void porcentajeNoSeRecortaCuandoSuperaLaCapacidad() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarCapacidades(
+                List.of(Map.of("codigoOaci", "SLLP", "capacidad", 420)));
+        estado.registrarDemanda(
+                List.of(demanda(1, "SLLP", 487, ms(27, 9, 0))));
+
+        OcupacionAeropuerto ocupacion = estado.calcularOcupacionesAeropuertos(
+                LocalDateTime.of(2026, 7, 27, 10, 0)).get("SLLP");
+
+        assertEquals(487, ocupacion.ocupacionActual());
+        assertEquals(115.95, ocupacion.porcentaje());
+    }
+
+    @Test
+    void slaVigenteContinuaYSlaVencidoNoEntregadoColapsa() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        long registro = ms(27, 15, 0);
+        long limite = ms(27, 16, 10);
+        estado.registrarResultados(List.of(Map.of(
+                "codigoVuelo", "XX-SLA",
+                "origen", "SPIM",
+                "destino", "SCEL",
+                "horaSalidaMs", ms(27, 17, 0),
+                "horaLlegadaMs", ms(27, 18, 0),
+                "envios", List.of(Map.of(
+                        "idEnvio", 914551,
+                        "cantidad", 1,
+                        "cumpleSla", false,
+                        "fechaRegistroMs", registro,
+                        "fechaLimiteMs", limite)))));
+
+        assertNull(estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 16, 0)));
+        EstadoColapso colapso =
+                estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 16, 11));
+        assertNotNull(colapso);
+        assertEquals(EstadoColapso.INCUMPLIMIENTO_SLA, colapso.tipo());
+        assertEquals("914551", colapso.idEnvio());
+    }
+
+    @Test
+    void horaExactaDelLimiteNoColapsaYUnMinutoDespuesSi() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarDemanda(List.of(Map.of(
+                "idEnvio", 20,
+                "origen", "SPIM",
+                "destino", "SCEL",
+                "cantidad", 1,
+                "fechaRegistroMs", ms(27, 15, 0),
+                "fechaLimiteMs", ms(27, 16, 0))));
+
+        assertNull(estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 16, 0)));
+        assertEquals(EstadoColapso.INCUMPLIMIENTO_SLA,
+                estado.detectarColapso(
+                        LocalDateTime.of(2026, 7, 27, 16, 1)).tipo());
+    }
+
+    @Test
+    void horizontePlanificadoNoAdelantaElRelojUsadoPorSla() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        long inicioMs = estado.getFechaInicio()
+                .toInstant(ZoneOffset.UTC).toEpochMilli();
+        estado.setPunteroSim(estado.getFechaInicio().plusHours(20));
+        estado.setInicioRealMs(1_000_000L);
+
+        long ahoraRealMs = 1_000_000L
+                + java.time.Duration.ofHours(14).toMillis() / estado.getK();
+
+        assertEquals(inicioMs + java.time.Duration.ofHours(14).toMillis(),
+                estado.tiempoSimuladoActualMs(ahoraRealMs));
+    }
+
+    @Test
+    void relojA14NoVenceLimiteDe1755AunqueLaVentanaLlegueA20() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarDemanda(List.of(Map.of(
+                "idEnvio", 13408606,
+                "origen", "SPIM",
+                "destino", "SCEL",
+                "cantidad", 1,
+                "fechaRegistroMs", ms(27, 10, 0),
+                "fechaLimiteMs", ms(27, 17, 55))));
+
+        assertNull(estado.detectarColapso(ms(27, 14, 0)));
+        assertEquals(EstadoColapso.INCUMPLIMIENTO_SLA,
+                estado.detectarColapso(ms(27, 17, 56)).tipo());
+    }
+
+    @Test
+    void aterrizajeIntermedioNoCuentaComoEntregaFinal() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarDemanda(List.of(Map.of(
+                "idEnvio", 21,
+                "origen", "SPIM",
+                "destino", "SCEL",
+                "cantidad", 1,
+                "fechaRegistroMs", ms(27, 12, 0),
+                "fechaLimiteMs", ms(27, 16, 0))));
+        estado.registrarResultados(List.of(vueloConEnvio(
+                "TRAMO-1", "SPIM", "SLLP", ms(27, 13, 0), ms(27, 14, 0),
+                21, 1, ms(27, 12, 0))));
+
+        assertEquals(EstadoColapso.INCUMPLIMIENTO_SLA,
+                estado.detectarColapso(
+                        LocalDateTime.of(2026, 7, 27, 16, 1)).tipo());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void updateSaturadoNoColapsaNiCancelaLaSimulacion() throws Exception {
+        SimulacionPureService service = mock(SimulacionPureService.class);
+        Map<String, Object> resultado = new LinkedHashMap<>();
+        resultado.put("enviosDemanda",
+                List.of(demanda(1, "SLLP", 420, ms(27, 0, 0))));
+        resultado.put("pendientesIds", List.of(1));
+        resultado.put("ocurrenciasDisponibles", List.of());
+        resultado.put("nuevosVuelos", List.of());
+        resultado.put("asignados", 0);
+        resultado.put("noAsignados", 1);
+        when(service.procesarVentanaSC(
+                any(), any(), anyInt(), anyList(), anyLong(), anySet()))
+                .thenReturn(resultado);
+
+        SimulacionWebSocketHandler handler = new SimulacionWebSocketHandler(
+                service,
+                new ObjectMapper(),
+                mock(com.plantilla.backend.modules.simulacion.service.ColapsoEstimadorService.class));
+        WebSocketSession ws = mock(WebSocketSession.class);
+        when(ws.isOpen()).thenReturn(true);
+        SimulacionSesionEstado estado = new SimulacionSesionEstado(
+                "s", ws, LocalDateTime.of(2026, 7, 27, 0, 0), 120, 5000);
+        estado.registrarCapacidades(
+                List.of(Map.of("codigoOaci", "SLLP", "capacidad", 420)));
+        ScheduledFuture<?> tarea = mock(ScheduledFuture.class);
+        estado.setTareaScheduled(tarea);
+
+        try {
+            handler.ejecutarCiclo(estado);
+
+            assertFalse(estado.isColapsada());
+            assertEquals(1, estado.getMensajesBuffer().size());
+            Map<String, Object> update = new ObjectMapper().readValue(
+                    estado.getMensajesBuffer().get(0), Map.class);
+            assertEquals("UPDATE", update.get("type"));
+
+            Map<String, Object> ocupaciones =
+                    (Map<String, Object>) update.get("ocupacionesAeropuertos");
+            Map<String, Object> sllp =
+                    (Map<String, Object>) ocupaciones.get("SLLP");
+            assertEquals(420, ((Number) sllp.get("ocupacionActual")).intValue());
+            assertEquals(420, ((Number) sllp.get("capacidadMaxima")).intValue());
+            verify(tarea, never()).cancel(false);
+        } finally {
+            handler.shutdown();
+        }
+    }
+
+    @Test
+    void envioEntregadoNoColapsaDespuesDeSuFechaLimite() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarResultados(List.of(Map.of(
+                "codigoVuelo", "XX-OK",
+                "origen", "SPIM",
+                "destino", "SCEL",
+                "horaSalidaMs", ms(27, 15, 0),
+                "horaLlegadaMs", ms(27, 16, 5),
+                "envios", List.of(Map.of(
+                        "idEnvio", 10,
+                        "cantidad", 1,
+                        "cumpleSla", true,
+                        "fechaRegistroMs", ms(27, 14, 0),
+                        "fechaLimiteMs", ms(27, 16, 10))))));
+
+        assertNull(estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 16, 11)));
+    }
+
+    @Test
+    void marcarColapsoEsIdempotenteYDetieneLaSesion() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.setSimId("sim-colapso");
+        EstadoColapso colapso = EstadoColapso.sla(
+                10, LocalDateTime.of(2026, 7, 27, 15, 59),
+                LocalDateTime.of(2026, 7, 27, 16, 0));
+
+        assertTrue(estado.marcarColapsada(colapso));
+        assertFalse(estado.marcarColapsada(colapso));
+        assertFalse(estado.estaActiva());
+        assertSame(colapso, estado.getEstadoColapso());
+    }
+
+    @Test
+    void enviosConRutaYPendientesSaturanJuntosElOrigen() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarCapacidades(List.of(Map.of("codigoOaci", "SPIM", "capacidad", 100)));
+        estado.registrarDemanda(List.of(
+                demanda(1, "SPIM", 70, ms(27, 9, 0)),
+                demanda(2, "SPIM", 30, ms(27, 9, 0))));
+        estado.registrarResultados(List.of(vueloConEnvio(
+                "RUTA-1", "SPIM", "SCEL", ms(27, 11, 0), ms(27, 13, 0),
+                1, 70, ms(27, 9, 0))));
+
+        OcupacionAeropuerto ocupacion = estado.calcularOcupacionesAeropuertos(
+                LocalDateTime.of(2026, 7, 27, 10, 0)).get("SPIM");
+        assertEquals(100, ocupacion.ocupacionActual());
+        assertNull(estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 10, 0)));
+    }
+
+    @Test
+    void envioEnDemandaYConRutaNoSeCuentaDosVeces() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarCapacidades(List.of(Map.of("codigoOaci", "SPIM", "capacidad", 30)));
+        estado.registrarDemanda(List.of(demanda(1, "SPIM", 20, ms(27, 9, 0))));
+        estado.registrarResultados(List.of(vueloConEnvio(
+                "RUTA-1", "SPIM", "SCEL", ms(27, 11, 0), ms(27, 13, 0),
+                1, 20, ms(27, 9, 0))));
+
+        assertNull(estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 10, 0)));
+    }
+
+    @Test
+    void envioFuturoTodaviaNoOcupaElOrigen() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarCapacidades(List.of(Map.of("codigoOaci", "SPIM", "capacidad", 1)));
+        estado.registrarDemanda(List.of(demanda(1, "SPIM", 1, ms(27, 11, 0))));
+
+        assertNull(estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 10, 0)));
+    }
+
+    @Test
+    void envioCuyoPrimerVueloYaDespegoNoOcupaElOrigen() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarCapacidades(List.of(Map.of("codigoOaci", "SPIM", "capacidad", 1)));
+        estado.registrarDemanda(List.of(demanda(1, "SPIM", 1, ms(27, 8, 0))));
+        estado.registrarResultados(List.of(vueloConEnvio(
+                "RUTA-1", "SPIM", "SCEL", ms(27, 9, 0), ms(27, 11, 0),
+                1, 1, ms(27, 8, 0))));
+
+        assertNull(estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 10, 0)));
+    }
+
+    @Test
+    void cancelacionDevuelveMaletasAlOrigenDelTramo() {
+        SimulacionSesionEstado estado = nuevaSesion();
+        estado.registrarCapacidades(List.of(Map.of("codigoOaci", "SPIM", "capacidad", 20)));
+        estado.registrarDemanda(List.of(demanda(1, "SPIM", 20, ms(27, 8, 0))));
+        long salida = ms(27, 11, 0);
+        estado.registrarResultados(List.of(vueloConEnvio(
+                "RUTA-1", "SPIM", "SCEL", salida, ms(27, 13, 0),
+                1, 20, ms(27, 8, 0))));
+        String clave = SimulacionSesionEstado.claveOcurrencia("RUTA-1", salida);
+
+        assertEquals(java.util.Set.of(1), estado.liberarOcurrencia(clave, ms(27, 10, 0)));
+        OcupacionAeropuerto ocupacion = estado.calcularOcupacionesAeropuertos(
+                LocalDateTime.of(2026, 7, 27, 10, 0)).get("SPIM");
+        assertEquals(20, ocupacion.ocupacionActual());
+        assertNull(estado.detectarColapso(LocalDateTime.of(2026, 7, 27, 10, 0)));
+    }
+
+    @Test
     void masDeUnaHoraYExactamenteUnaHoraCancelanLaSeleccionada() {
         BackendDataAdapter adapter = mock(BackendDataAdapter.class);
         VueloRepository repository = mock(VueloRepository.class);
@@ -234,6 +532,10 @@ class SimulacionCancelacionTest {
         prepararConversion(adapter, seleccionada);
         when(repository.findByCodigoVuelo(seleccionada.getCodigoVuelo()))
                 .thenReturn(java.util.Optional.of(seleccionada));
+        when(repository.findByAeropuertoOrigen_IdAeropuertoAndAeropuertoDestino_IdAeropuertoAndHoraSalidaBetweenAndEstadoNotOrderByHoraSalidaAsc(
+                eq(10), eq(20), any(LocalDateTime.class), any(LocalDateTime.class),
+                eq(com.plantilla.backend.shared.enums.EstadoVuelo.CANCELADO)))
+                .thenReturn(List.of(seleccionada));
         long salida = seleccionada.getHoraSalida().toInstant(ZoneOffset.UTC).toEpochMilli();
         LocalDateTime horizonte = LocalDateTime.of(2028, 8, 13, 0, 0);
 
@@ -355,6 +657,32 @@ class SimulacionCancelacionTest {
                 vuelo.getIdVuelo());
         when(adapter.convertirVuelo(vuelo)).thenReturn(alns);
         when(adapter.toLocalDateTimeUtc(minutos)).thenReturn(vuelo.getHoraSalida());
+    }
+
+    private Map<String, Object> demanda(
+            int id, String origen, int cantidad, long fechaRegistroMs) {
+        return Map.of(
+                "idEnvio", id,
+                "origen", origen,
+                "cantidad", cantidad,
+                "fechaRegistroMs", fechaRegistroMs);
+    }
+
+    private Map<String, Object> vueloConEnvio(
+            String codigo, String origen, String destino,
+            long salidaMs, long llegadaMs, int idEnvio,
+            int cantidad, long fechaRegistroMs) {
+        return Map.of(
+                "codigoVuelo", codigo,
+                "origen", origen,
+                "destino", destino,
+                "horaSalidaMs", salidaMs,
+                "horaLlegadaMs", llegadaMs,
+                "envios", List.of(Map.of(
+                        "idEnvio", idEnvio,
+                        "cantidad", cantidad,
+                        "cumpleSla", true,
+                        "fechaRegistroMs", fechaRegistroMs)));
     }
 
     private SimulacionSesionEstado nuevaSesion() {

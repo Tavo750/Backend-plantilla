@@ -15,6 +15,9 @@ import java.util.Set;
 import java.util.Collection;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.Comparator;
 
 @Getter
 @Setter
@@ -35,6 +38,16 @@ public class SimulacionSesionEstado {
     private int ciclosEjecutados = 0;
     private ScheduledFuture<?> tareaScheduled;
     private boolean modoColapso = false;
+    private volatile boolean colapsada = false;
+    private volatile EstadoColapso estadoColapso;
+
+    /** Capacidades fisicas reales recibidas en el snapshot inicial. */
+    private final Map<String, Integer> capacidadesAeropuerto = new ConcurrentHashMap<>();
+
+    /** Ruta vigente de cada envio, usada para evaluar ocupacion y SLA en cada ciclo. */
+    private final Map<Integer, SeguimientoEnvio> seguimientosEnvio = new ConcurrentHashMap<>();
+    /** Toda demanda registrada, incluso cuando ALNS aun no construyo una ruta. */
+    private final Map<Integer, DemandaEnvio> demandasEnvio = new ConcurrentHashMap<>();
 
     /** Hora de inicio ("HH:mm") elegida por el usuario — solo para mostrar en la lista de sims activas */
     private String horaInicio = "00:00";
@@ -82,8 +95,40 @@ public class SimulacionSesionEstado {
     public boolean estaActiva() {
         // Compartida: vive mientras no haya terminado (independiente de que el líder
         // siga conectado — otros dispositivos pueden estar viéndola).
+        if (colapsada) return false;
         if (simId != null) return !finalizada && ciclosEjecutados < MAX_CICLOS;
-        return wsSession.isOpen() && ciclosEjecutados < MAX_CICLOS;
+        return wsSession.isOpen() && !finalizada && ciclosEjecutados < MAX_CICLOS;
+    }
+
+    public void registrarCapacidades(List<Map<String, Object>> aeropuertos) {
+        if (aeropuertos == null) return;
+        for (Map<String, Object> aeropuerto : aeropuertos) {
+            Object codigo = aeropuerto.get("codigoOaci");
+            Object capacidad = aeropuerto.get("capacidad");
+            if (codigo instanceof String c && capacidad instanceof Number n && n.intValue() > 0) {
+                capacidadesAeropuerto.put(c, n.intValue());
+            }
+        }
+    }
+
+    public void registrarDemanda(List<Map<String, Object>> envios) {
+        if (envios == null) return;
+        for (Map<String, Object> envio : envios) {
+            Object id = envio.get("idEnvio");
+            Object origen = envio.get("origen");
+            Object destino = envio.get("destino");
+            Object cantidad = envio.get("cantidad");
+            Object registro = envio.get("fechaRegistroMs");
+            if (!(id instanceof Number) || !(origen instanceof String)
+                    || !(cantidad instanceof Number) || !(registro instanceof Number)) continue;
+            int idEnvio = ((Number) id).intValue();
+            Long limite = envio.get("fechaLimiteMs") instanceof Number n ? n.longValue() : null;
+            demandasEnvio.computeIfAbsent(idEnvio, ignored -> new DemandaEnvio(
+                    idEnvio, (String) origen,
+                    destino instanceof String d ? d : null,
+                    ((Number) cantidad).intValue(),
+                    ((Number) registro).longValue(), limite));
+        }
     }
 
     public static String claveOcurrencia(String codigoVuelo, long horaSalidaMs) {
@@ -94,6 +139,7 @@ public class SimulacionSesionEstado {
         if (vuelos == null) return;
 
         Map<Integer, Set<String>> nuevasOcurrenciasPorEnvio = new java.util.HashMap<>();
+        Map<Integer, SeguimientoEnvio> nuevosSeguimientos = new java.util.HashMap<>();
         for (Map<String, Object> vuelo : vuelos) {
             Object codigo = vuelo.get("codigoVuelo");
             Object salida = vuelo.get("horaSalidaMs");
@@ -110,6 +156,7 @@ public class SimulacionSesionEstado {
                     nuevasOcurrenciasPorEnvio
                             .computeIfAbsent(id.intValue(), ignored -> new java.util.HashSet<>())
                             .add(clave);
+                    registrarSeguimiento(nuevosSeguimientos, vuelo, envio, id.intValue());
                 }
             }
         }
@@ -131,6 +178,226 @@ public class SimulacionSesionEstado {
                     .computeIfAbsent(clave, ignored -> ConcurrentHashMap.newKeySet())
                     .add(idEnvio));
         });
+        nuevosSeguimientos.forEach((id, seguimiento) -> {
+            seguimiento.tramos.sort(Comparator.comparingLong(TramoSeguimiento::salidaMs));
+            seguimientosEnvio.put(id, seguimiento);
+        });
+    }
+
+    private void registrarSeguimiento(
+            Map<Integer, SeguimientoEnvio> nuevos, Map<String, Object> vuelo,
+            Map<?, ?> envio, int idEnvio) {
+        Object origen = vuelo.get("origen");
+        Object destino = vuelo.get("destino");
+        Object salida = vuelo.get("horaSalidaMs");
+        Object llegada = vuelo.get("horaLlegadaMs");
+        if (!(origen instanceof String) || !(destino instanceof String)
+                || !(salida instanceof Number) || !(llegada instanceof Number)) return;
+
+        int cantidad = envio.get("cantidad") instanceof Number n ? n.intValue() : 1;
+        long registroMs = envio.get("fechaRegistroMs") instanceof Number n
+                ? n.longValue() : ((Number) salida).longValue();
+        Long limiteMs = envio.get("fechaLimiteMs") instanceof Number n ? n.longValue() : null;
+        boolean cumpleSla = !(envio.get("cumpleSla") instanceof Boolean b) || b;
+
+        SeguimientoEnvio seguimiento = nuevos.computeIfAbsent(idEnvio,
+                ignored -> new SeguimientoEnvio(
+                        idEnvio, cantidad, registroMs, limiteMs, cumpleSla, new ArrayList<>()));
+        seguimiento.cumpleSla = seguimiento.cumpleSla && cumpleSla;
+        seguimiento.tramos.add(new TramoSeguimiento(
+                claveOcurrencia((String) vuelo.get("codigoVuelo"), ((Number) salida).longValue()),
+                (String) origen, (String) destino,
+                ((Number) salida).longValue(), ((Number) llegada).longValue()));
+    }
+
+    /** Evalua exclusivamente incumplimientos reales del SLA. */
+    public EstadoColapso detectarColapso(LocalDateTime tiempoSimulado) {
+        return detectarColapso(
+                tiempoSimulado.toInstant(ZoneOffset.UTC).toEpochMilli());
+    }
+
+    /** Compara el reloj simulado y el limite usando exclusivamente epoch millis. */
+    public EstadoColapso detectarColapso(long tiempoSimulacionMs) {
+        if (colapsada) return estadoColapso;
+        LocalDateTime tiempoSimulado = LocalDateTime.ofInstant(
+                Instant.ofEpochMilli(tiempoSimulacionMs), ZoneOffset.UTC);
+
+        for (DemandaEnvio demanda : demandasEnvio.values()) {
+            if (demanda.fechaLimiteMs == null
+                    || tiempoSimulacionMs <= demanda.fechaLimiteMs) {
+                continue;
+            }
+            SeguimientoEnvio seguimiento = seguimientosEnvio.get(demanda.idEnvio);
+            if (seguimiento == null
+                    || !seguimiento.entregadoEn(
+                            demanda.destinoFinal, tiempoSimulacionMs)) {
+                return EstadoColapso.sla(demanda.idEnvio,
+                        LocalDateTime.ofInstant(
+                                Instant.ofEpochMilli(demanda.fechaLimiteMs), ZoneOffset.UTC),
+                        tiempoSimulado);
+            }
+        }
+
+        // Algunos resultados pueden llegar sin el snapshot de demanda correspondiente.
+        for (SeguimientoEnvio seguimiento : seguimientosEnvio.values()) {
+            if (demandasEnvio.containsKey(seguimiento.idEnvio)
+                    || seguimiento.fechaLimiteMs == null
+                    || tiempoSimulacionMs <= seguimiento.fechaLimiteMs) {
+                continue;
+            }
+            if (!seguimiento.entregadoEn(tiempoSimulacionMs)) {
+                return EstadoColapso.sla(seguimiento.idEnvio,
+                        LocalDateTime.ofInstant(
+                                Instant.ofEpochMilli(seguimiento.fechaLimiteMs), ZoneOffset.UTC),
+                        tiempoSimulado);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Conserva compatibilidad con los ciclos que ya calcularon el snapshot para
+     * el UPDATE. La ocupacion se muestra, pero nunca determina el colapso.
+     */
+    public EstadoColapso detectarColapso(
+            LocalDateTime tiempoSimulado,
+            Map<String, OcupacionAeropuerto> ocupaciones) {
+        return detectarColapso(tiempoSimulado);
+    }
+
+    /**
+     * Instante que representa el reloj visible. El puntero ALNS es solo un
+     * horizonte de datos y nunca puede adelantar este reloj para evaluar SLA.
+     */
+    public long tiempoSimuladoActualMs(long ahoraRealMs) {
+        long inicioMs = fechaInicio.toInstant(ZoneOffset.UTC).toEpochMilli();
+        long transcurridoRealMs = Math.max(0L, ahoraRealMs - inicioRealMs);
+        long relojMs = inicioMs + transcurridoRealMs * (long) K;
+        long horizonteMs = punteroSim.toInstant(ZoneOffset.UTC).toEpochMilli();
+        long finMs = inicioMs + java.time.Duration.ofDays(5).toMillis();
+        return Math.min(relojMs, Math.min(horizonteMs, finMs));
+    }
+
+    /**
+     * Fuente unica de verdad para la ocupacion mostrada.
+     */
+    public Map<String, OcupacionAeropuerto> calcularOcupacionesAeropuertos(
+            LocalDateTime tiempoSimulado) {
+        long ahoraMs = tiempoSimulado.toInstant(ZoneOffset.UTC).toEpochMilli();
+        Map<String, FlujoAeropuerto> flujos = new java.util.TreeMap<>();
+        capacidadesAeropuerto.keySet().forEach(
+                codigo -> flujos.put(codigo, new FlujoAeropuerto()));
+        Set<Integer> enviosContabilizados = new java.util.HashSet<>();
+
+        for (SeguimientoEnvio envio : seguimientosEnvio.values()) {
+            enviosContabilizados.add(envio.idEnvio);
+            if (envio.tramos.isEmpty()) continue;
+            TramoSeguimiento primero = envio.tramos.get(0);
+            registrarFlujo(flujos, primero.origen, envio.cantidad,
+                    envio.fechaRegistroMs, primero.salidaMs, ahoraMs);
+            for (int i = 1; i < envio.tramos.size(); i++) {
+                TramoSeguimiento anterior = envio.tramos.get(i - 1);
+                TramoSeguimiento actual = envio.tramos.get(i);
+                registrarFlujo(flujos, actual.origen, envio.cantidad,
+                        anterior.llegadaMs, actual.salidaMs, ahoraMs);
+            }
+        }
+
+        for (DemandaEnvio envio : demandasEnvio.values()) {
+            if (enviosContabilizados.contains(envio.idEnvio)) continue;
+            if (envio.disponibleDesdeMs <= ahoraMs) {
+                flujos.computeIfAbsent(
+                        envio.origenActual, ignored -> new FlujoAeropuerto())
+                        .entradas += envio.cantidad;
+                enviosContabilizados.add(envio.idEnvio);
+            }
+        }
+
+        Map<String, OcupacionAeropuerto> resultado = new java.util.LinkedHashMap<>();
+        flujos.forEach((codigo, flujo) -> {
+            int capacidad = capacidadesAeropuerto.getOrDefault(codigo, 0);
+            int ocupacion = Math.max(0, flujo.entradas - flujo.salidas);
+            double porcentaje = capacidad > 0
+                    ? Math.round(ocupacion * 10_000.0 / capacidad) / 100.0
+                    : 0.0;
+            resultado.put(codigo, new OcupacionAeropuerto(
+                    ocupacion, capacidad, porcentaje, flujo.entradas, flujo.salidas));
+        });
+        return resultado;
+    }
+
+    private static void registrarFlujo(
+            Map<String, FlujoAeropuerto> flujos, String aeropuerto, int cantidad,
+            long entradaMs, long salidaMs, long ahoraMs) {
+        FlujoAeropuerto flujo = flujos.computeIfAbsent(
+                aeropuerto, ignored -> new FlujoAeropuerto());
+        if (entradaMs <= ahoraMs) flujo.entradas += cantidad;
+        if (salidaMs <= ahoraMs) flujo.salidas += cantidad;
+    }
+
+    public boolean marcarColapsada(EstadoColapso colapso) {
+        if (colapsada || colapso == null || !colapso.detectado()) return false;
+        estadoColapso = colapso;
+        colapsada = true;
+        return true;
+    }
+
+    private record TramoSeguimiento(
+            String clave, String origen, String destino, long salidaMs, long llegadaMs) {}
+
+    private static final class FlujoAeropuerto {
+        int entradas;
+        int salidas;
+    }
+
+    private static final class SeguimientoEnvio {
+        final int idEnvio;
+        final int cantidad;
+        final long fechaRegistroMs;
+        final Long fechaLimiteMs;
+        boolean cumpleSla;
+        final List<TramoSeguimiento> tramos;
+
+        SeguimientoEnvio(int idEnvio, int cantidad, long fechaRegistroMs,
+                         Long fechaLimiteMs, boolean cumpleSla,
+                         List<TramoSeguimiento> tramos) {
+            this.idEnvio = idEnvio;
+            this.cantidad = cantidad;
+            this.fechaRegistroMs = fechaRegistroMs;
+            this.fechaLimiteMs = fechaLimiteMs;
+            this.cumpleSla = cumpleSla;
+            this.tramos = tramos;
+        }
+
+        boolean entregadoEn(long ahoraMs) {
+            return !tramos.isEmpty()
+                    && tramos.get(tramos.size() - 1).llegadaMs <= ahoraMs;
+        }
+
+        boolean entregadoEn(String destinoFinal, long ahoraMs) {
+            return entregadoEn(ahoraMs)
+                    && (destinoFinal == null
+                    || destinoFinal.equals(tramos.get(tramos.size() - 1).destino));
+        }
+    }
+
+    private static final class DemandaEnvio {
+        final int idEnvio;
+        final int cantidad;
+        final Long fechaLimiteMs;
+        final String destinoFinal;
+        String origenActual;
+        long disponibleDesdeMs;
+
+        DemandaEnvio(int idEnvio, String origen, String destinoFinal, int cantidad,
+                     long fechaRegistroMs, Long fechaLimiteMs) {
+            this.idEnvio = idEnvio;
+            this.cantidad = cantidad;
+            this.fechaLimiteMs = fechaLimiteMs;
+            this.destinoFinal = destinoFinal;
+            this.origenActual = origen;
+            this.disponibleDesdeMs = fechaRegistroMs;
+        }
     }
 
     public Set<Integer> enviosDeOcurrencia(String clave) {
@@ -190,11 +457,26 @@ public class SimulacionSesionEstado {
 
     /** Retira la ocurrencia de las rutas temporales y devuelve sus envíos afectados. */
     public Set<Integer> liberarOcurrencia(String clave) {
+        return liberarOcurrencia(clave, System.currentTimeMillis());
+    }
+
+    public Set<Integer> liberarOcurrencia(String clave, long fechaCancelacionMs) {
         Set<Integer> afectados = enviosPorOcurrencia.remove(clave);
         if (afectados == null) return Collections.emptySet();
 
         Set<Integer> copia = new java.util.HashSet<>(afectados);
         for (Integer idEnvio : copia) {
+            SeguimientoEnvio seguimiento = seguimientosEnvio.remove(idEnvio);
+            DemandaEnvio demanda = demandasEnvio.get(idEnvio);
+            if (seguimiento != null && demanda != null) {
+                seguimiento.tramos.stream()
+                        .filter(tramo -> tramo.clave.equals(clave))
+                        .findFirst()
+                        .ifPresent(tramo -> {
+                            demanda.origenActual = tramo.origen;
+                            demanda.disponibleDesdeMs = fechaCancelacionMs;
+                        });
+            }
             Set<String> ruta = ocurrenciasPorEnvio.get(idEnvio);
             if (ruta != null) {
                 ruta.remove(clave);
